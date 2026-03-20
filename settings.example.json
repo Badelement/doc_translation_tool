@@ -1,0 +1,23 @@
+{
+  "llm": {
+    "provider": "openai_compatible",
+    "api_format": "openai",
+    "anthropic_version": "2023-06-01",
+    "base_url": "https://example.internal/api/v1",
+    "api_key": "your_api_key_here",
+    "model": "internal-translate-model",
+    "timeout": 60,
+    "connect_timeout": 10,
+    "read_timeout": 60,
+    "max_retries": 2,
+    "batch_size": 8,
+    "parallel_batches": 2,
+    "temperature": 0.2
+  },
+  "markdown": {
+    "front_matter_translatable_fields": ["title", "subtitle", "desc"]
+  },
+  "glossary": {
+    "path": "glossary.json"
+  }
+}

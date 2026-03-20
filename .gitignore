@@ -1,0 +1,13 @@
+.DS_Store
+.env
+settings.json
+glossary.json
+.pytest_cache/
+.venv/
+__pycache__/
+*.pyc
+build/
+build-macos/
+dist/
+dist-macos/
+*.egg-info/
