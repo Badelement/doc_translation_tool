@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded in this file.
 
+## v0.3.1 - 2026-03-21
+
+Improved:
+
+- Normalized loose and escaped placeholder token variants before validation so LLM output like `@@ protect-0 @@` or escaped `@` sequences no longer fail placeholder checks unnecessarily
+- Promoted the total translation elapsed time into the pipeline result so the GUI can show a stable completion message with final duration
+- Kept the completion status context in the status bar after the worker finishes, instead of immediately replacing it with a generic idle message
+
+Fixed:
+
+- Reduced false-positive placeholder validation failures caused by non-canonical placeholder formatting from the model
+
 ## v0.3.0 - 2026-03-20
 
 Improved:

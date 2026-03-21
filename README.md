@@ -2,7 +2,7 @@
 
 Desktop tool for translating a single Markdown document between Chinese and English while preserving Markdown structure.
 
-Current version: `0.3.0`
+Current version: `0.3.1`
 
 ## What It Does
 
@@ -55,6 +55,7 @@ Useful LLM tuning fields:
 ## Main User Docs
 
 - `使用指南.md`: end-user guide
+- `GitHub使用指南.md`: GitHub and release workflow guide for this project
 - `PACKAGING.md`: release packaging notes
 - `CHANGELOG.md`: release history
 
