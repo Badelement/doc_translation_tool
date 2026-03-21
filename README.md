@@ -2,7 +2,20 @@
 
 Desktop tool for translating a single Markdown document between Chinese and English while preserving Markdown structure.
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 Current release: `0.4.0`
+
+## Overview
+
+This project focuses on a practical internal workflow:
+
+- Translate one Markdown document at a time
+- Preserve Markdown structure, placeholders, tables, and front matter rules
+- Support both Chinese-to-English and English-to-Chinese translation
+- Support OpenAI-compatible and Anthropic-compatible API formats
+- Support batch parallel translation for better large-document throughput
+- Provide clearer GUI feedback for model configuration, connectivity, and batch progress
 
 ## What It Does
 
@@ -69,6 +82,7 @@ UI status notes:
 
 ## Main User Docs
 
+- `README.zh-CN.md`: Chinese project overview for the repository homepage
 - `使用指南.md`: end-user guide
 - `GitHub使用指南.md`: GitHub and release workflow guide for this project
 - `PACKAGING.md`: release packaging notes
