@@ -284,13 +284,7 @@ def test_handle_translation_succeeded_updates_ui_and_shows_output(
         fake_information,
     )
 
-    from doc_translation_tool.ui import main_window as main_window_module
-
-    original_perf_counter = main_window_module.perf_counter
-    main_window_module.perf_counter = lambda: 130.0
-
     window = MainWindow()
-    window._task_started_at = 0.0
     result = TranslationPipelineResult(
         output_path=str(tmp_path / "demo_en.md"),
         final_markdown_text="demo",
@@ -298,19 +292,16 @@ def test_handle_translation_succeeded_updates_ui_and_shows_output(
         total_segments=3,
         total_batches=2,
         retry_attempts=1,
+        overall_elapsed_seconds=130.0,
     )
 
-    try:
-        window._handle_translation_succeeded(result)
-    finally:
-        main_window_module.perf_counter = original_perf_counter
+    window._handle_translation_succeeded(result)
     log_text = window.log_output.toPlainText()
 
-    assert window.progress_label.text() == "翻译完成"
+    assert window.progress_label.text() == "翻译完成（总耗时 02:10）"
     assert window.progress_bar.value() == 100
     assert captured["title"] == "翻译完成"
     assert str(tmp_path / "demo_en.md") in captured["message"]
-    assert "[完成] 总耗时：02:10" in log_text
     assert "[翻译] 平均每批耗时：01:05" in log_text
     assert "[翻译] 重试次数：1" in log_text
     window.close()
@@ -367,6 +358,17 @@ def test_handle_worker_finished_prepares_next_translation_run(qapp) -> None:
     assert window.reset_button.isEnabled() is True
     assert window.start_button.text() == "开始下一次翻译"
     assert window.statusBar().currentMessage() == "当前任务已结束，可继续下一次翻译"
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_worker_finished_keeps_completion_status_context(qapp) -> None:
+    window = MainWindow()
+    window.statusBar().showMessage("翻译完成（总耗时 02:10）")
+
+    window._handle_worker_finished()
+
+    assert window.statusBar().currentMessage() == "翻译完成（总耗时 02:10），可继续下一次翻译"
     window.close()
     window.deleteLater()
 

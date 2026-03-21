@@ -28,6 +28,7 @@ class TranslationPipelineResult:
     total_segments: int
     total_batches: int
     retry_attempts: int = 0
+    overall_elapsed_seconds: float = 0.0
 
 
 class TranslationPipelineError(RuntimeError):
@@ -213,12 +214,14 @@ class DocumentTranslationPipeline:
                 f"[输出] 输出文件写入完成，耗时 {format_elapsed(perf_counter() - output_started_at)}。"
             )
             emit_log(f"[输出] 输出文件路径：{output_result.output_path}")
-            emit_log(f"[完成] 总耗时：{format_elapsed(perf_counter() - overall_started_at)}。")
+            overall_elapsed_seconds = perf_counter() - overall_started_at
+            emit_log(f"[完成] 总耗时：{format_elapsed(overall_elapsed_seconds)}。")
             emit_progress("翻译完成", 100)
             return self._build_pipeline_result(
                 output_result=output_result,
                 translation_result=translation_result,
                 connection_message=connection_message,
+                overall_elapsed_seconds=overall_elapsed_seconds,
             )
         finally:
             if client is not None:
@@ -230,6 +233,7 @@ class DocumentTranslationPipeline:
         output_result: OutputWriteResult,
         translation_result: BatchTranslationResult,
         connection_message: str,
+        overall_elapsed_seconds: float,
     ) -> TranslationPipelineResult:
         return TranslationPipelineResult(
             output_path=output_result.output_path,
@@ -238,4 +242,5 @@ class DocumentTranslationPipeline:
             total_segments=translation_result.total_segments,
             total_batches=translation_result.total_batches,
             retry_attempts=translation_result.retry_attempts,
+            overall_elapsed_seconds=overall_elapsed_seconds,
         )

@@ -101,6 +101,7 @@ def test_pipeline_executes_full_flow_and_writes_output(tmp_path: Path) -> None:
     assert result.connection_message == "OK"
     assert result.total_segments == 1
     assert result.retry_attempts == 0
+    assert result.overall_elapsed_seconds >= 0
     assert progress_events[0][1] == 0
     assert ("正在等待首批结果", 50) in progress_events
     assert any(message.startswith("已完成批次 ") for message, _percent in progress_events)
