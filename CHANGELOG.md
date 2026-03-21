@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded in this file.
 
+## Unreleased
+
+## v0.4.0 - 2026-03-21
+
+Improved:
+
+- Auto-switch the translation direction to `en_to_zh` or `zh_to_en` when the selected Markdown file is confidently detected as English or Chinese
+- Refined translation-stage progress updates so the GUI reports both `正在处理第 x/N 批` and `已完成批次 x/N` instead of staying on a vague early-stage waiting message
+- Added startup-side model configuration hinting in the GUI so users can see `配置不完整` / `配置已加载，待检查连通性` before clicking the translate button
+- Clarified the bottom-left GUI status wording to distinguish configuration loading, connectivity checking, successful connectivity, configuration errors, and connectivity failures
+
+Docs:
+
+- Updated `README.md` and `使用指南.md` to document the new startup model-status hints, auto direction switching, and batch-based progress behavior
+- Recorded the latest local optimization notes in `开发问题记录.md`
+
 ## v0.3.3 - 2026-03-21
 
 Fixed:

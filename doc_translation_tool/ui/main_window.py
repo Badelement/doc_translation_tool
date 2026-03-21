@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from doc_translation_tool import __version__
+from doc_translation_tool.config import load_app_settings
 from doc_translation_tool.models import TranslationTask
 from doc_translation_tool.services import (
     DocumentTranslationPipeline,
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         self.resize(960, 680)
         self._build_ui()
         self._connect_signals()
+        self._refresh_model_config_hint()
 
     def _build_ui(self) -> None:
         container = QWidget(self)
@@ -241,7 +243,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout()
         layout.setSpacing(12)
 
-        self.connection_hint_label = QLabel("模型连接状态：未检查", self)
+        self.connection_hint_label = QLabel("模型状态：未检查", self)
         self.connection_hint_label.setAlignment(
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
         )
@@ -258,6 +260,36 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.reset_button, 0)
         layout.addWidget(self.start_button, 0)
         return layout
+
+    def _refresh_model_config_hint(self) -> None:
+        try:
+            settings = load_app_settings(self.project_root)
+        except Exception as exc:
+            self.connection_hint_label.setText("模型状态：配置加载失败")
+            self.connection_hint_label.setToolTip(f"读取配置失败：{exc}")
+            return
+
+        missing_fields: list[str] = []
+        if not settings.llm.base_url.strip():
+            missing_fields.append("base_url")
+        if not settings.llm.api_key.strip():
+            missing_fields.append("api_key")
+        if not settings.llm.model.strip():
+            missing_fields.append("model")
+
+        if missing_fields:
+            self.connection_hint_label.setText("模型状态：配置不完整")
+            self.connection_hint_label.setToolTip(
+                "缺少关键项："
+                + ", ".join(missing_fields)
+                + "。开始翻译前请先补齐。"
+            )
+            return
+
+        self.connection_hint_label.setText("模型状态：配置已加载，待检查连通性")
+        self.connection_hint_label.setToolTip(
+            "已检测到 base_url、api_key、model。实际连通性会在开始翻译时检查。"
+        )
 
     def current_direction(self) -> str:
         return "zh_to_en" if self.zh_to_en_radio.isChecked() else "en_to_zh"
@@ -289,6 +321,7 @@ class MainWindow(QMainWindow):
 
     def handle_source_path_received(self, source_path: str) -> None:
         self.set_source_path(source_path)
+        self._auto_select_direction_from_source()
         self._warn_if_language_mismatch(trigger="source")
         self.statusBar().showMessage("已更新目标翻译文件")
 
@@ -356,6 +389,7 @@ class MainWindow(QMainWindow):
         source_path = Path(source_text).expanduser()
         if source_path.is_file() and source_path.suffix.lower() == ".md":
             self.set_source_path(str(source_path))
+            self._auto_select_direction_from_source()
             self._warn_if_language_mismatch(trigger="source")
             return
 
@@ -377,6 +411,30 @@ class MainWindow(QMainWindow):
         if not checked:
             return
         self._warn_if_language_mismatch(trigger="toggle")
+
+    def _auto_select_direction_from_source(self) -> None:
+        source_text = self.source_path_edit.text().strip()
+        if not source_text:
+            return
+
+        source_path = Path(source_text).expanduser()
+        if not source_path.is_file() or source_path.suffix.lower() != ".md":
+            return
+
+        detection_result = detect_language_from_file(source_path)
+        if not detection_result.is_confident:
+            return
+
+        if detection_result.language == "zh":
+            if not self.zh_to_en_radio.isChecked():
+                self.zh_to_en_radio.setChecked(True)
+                self._append_log("[语言] 检测到中文内容，已自动切换为：中译英")
+            return
+
+        if detection_result.language == "en":
+            if not self.en_to_zh_radio.isChecked():
+                self.en_to_zh_radio.setChecked(True)
+                self._append_log("[语言] 检测到英文内容，已自动切换为：英译中")
 
     def _warn_if_language_mismatch(self, *, trigger: str) -> None:
         source_text = self.source_path_edit.text().strip()
@@ -483,10 +541,10 @@ class MainWindow(QMainWindow):
         self.zh_to_en_radio.setChecked(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText("等待开始翻译")
-        self.connection_hint_label.setText("模型连接状态：未检查")
         self.start_button.setText("开始翻译")
         self.log_output.clear()
         self._seed_initial_logs()
+        self._refresh_model_config_hint()
         self._append_log("[系统] 界面已重置，可开始新的翻译任务。")
         self.statusBar().showMessage("界面已重置")
 
@@ -520,7 +578,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("正在启动翻译任务")
         self._task_started_at = perf_counter()
-        self.connection_hint_label.setText("模型连接状态：检查中")
+        self.connection_hint_label.setText("模型状态：正在检查接口连通性")
+        self.connection_hint_label.setToolTip("正在验证当前配置是否能正常调用模型接口。")
         self.statusBar().showMessage("正在执行翻译任务")
         self._append_log("[任务] 已启动后台翻译任务。")
         worker.start()
@@ -541,7 +600,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(display_message)
 
     def _handle_connection_checked(self, message: str) -> None:
-        self.connection_hint_label.setText(f"模型连接状态：已通过 ({message})")
+        self.connection_hint_label.setText(f"模型状态：接口连通 ({message})")
+        self.connection_hint_label.setToolTip("已完成配置读取和接口连通性检查，可以继续执行翻译。")
 
     def _handle_translation_succeeded(self, result: TranslationPipelineResult) -> None:
         self.progress_bar.setValue(100)
@@ -572,8 +632,12 @@ class MainWindow(QMainWindow):
         self._append_log(f"[失败] {stage_label}：{message}")
         if suggestion:
             self._append_log(f"[建议] {suggestion}")
-        if stage in {"model_config", "check_connection"}:
-            self.connection_hint_label.setText("模型连接状态：失败")
+        if stage == "model_config":
+            self.connection_hint_label.setText("模型状态：配置异常")
+            self.connection_hint_label.setToolTip("请先修正 .env 或 settings.json 中的模型配置。")
+        elif stage == "check_connection":
+            self.connection_hint_label.setText("模型状态：接口检查失败")
+            self.connection_hint_label.setToolTip("配置已读取，但接口未通过连通性检查。")
         QMessageBox.critical(
             self,
             f"{stage_label}失败",

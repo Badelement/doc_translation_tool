@@ -79,6 +79,7 @@ class TranslationTaskService:
         direction: str,
         glossary: list[dict[str, str]] | None = None,
         on_batch_complete: Callable[[int, int], None] | None = None,
+        on_batch_started: Callable[[int, int, int], None] | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> BatchTranslationResult:
         segments = document.segments
@@ -114,6 +115,8 @@ class TranslationTaskService:
 
         if self.parallel_batches == 1 or total_batches <= 1:
             for batch_index, batch in indexed_batches:
+                if on_batch_started is not None:
+                    on_batch_started(batch_index, total_batches, successful_batches)
                 batch_result = self._run_single_batch(
                     batch,
                     direction=direction,
@@ -146,6 +149,10 @@ class TranslationTaskService:
                     )
                     for batch_index, batch in indexed_batches
                 }
+
+                if on_batch_started is not None:
+                    for batch_index, _batch in indexed_batches:
+                        on_batch_started(batch_index, total_batches, successful_batches)
 
                 while pending:
                     done, pending = wait(

@@ -8,6 +8,112 @@ from doc_translation_tool.services import TranslationPipelineResult
 from doc_translation_tool.ui.main_window import MainWindow
 
 
+def test_main_window_shows_incomplete_model_config_status_on_startup(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    window = MainWindow(project_root=tmp_path)
+
+    assert window.connection_hint_label.text() == "模型状态：配置不完整"
+    assert "base_url" in window.connection_hint_label.toolTip()
+    assert "api_key" in window.connection_hint_label.toolTip()
+    assert "model" in window.connection_hint_label.toolTip()
+    window.close()
+    window.deleteLater()
+
+
+def test_main_window_shows_loaded_model_config_status_on_startup(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "DOC_TRANS_BASE_URL=https://example.com/v1",
+                "DOC_TRANS_API_KEY=test-key",
+                "DOC_TRANS_MODEL=test-model",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    window = MainWindow(project_root=tmp_path)
+
+    assert window.connection_hint_label.text() == "模型状态：配置已加载，待检查连通性"
+    assert "实际连通性会在开始翻译时检查" in window.connection_hint_label.toolTip()
+    window.close()
+    window.deleteLater()
+
+
+def test_main_window_shows_config_load_failure_on_startup(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    (tmp_path / "settings.json").write_text("{bad json", encoding="utf-8")
+
+    window = MainWindow(project_root=tmp_path)
+
+    assert window.connection_hint_label.text() == "模型状态：配置加载失败"
+    assert "读取配置失败" in window.connection_hint_label.toolTip()
+    window.close()
+    window.deleteLater()
+
+
+def test_start_translation_task_updates_model_status_to_connectivity_checking(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "demo.md"
+    source_file.write_text("# demo\n", encoding="utf-8")
+
+    window = MainWindow(project_root=tmp_path)
+
+    class FakeSignal:
+        def connect(self, _callback) -> None:
+            return None
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.progress_updated = FakeSignal()
+            self.log_message = FakeSignal()
+            self.connection_checked = FakeSignal()
+            self.translation_succeeded = FakeSignal()
+            self.translation_failed = FakeSignal()
+            self.finished = FakeSignal()
+
+        def start(self) -> None:
+            return None
+
+        def isRunning(self) -> bool:
+            return False
+
+    window._worker = None
+    window._build_translation_worker = lambda _task: FakeWorker()
+
+    window._start_translation_task(
+        source_path=str(source_file),
+        output_dir=str(tmp_path),
+        direction="zh_to_en",
+    )
+
+    assert window.connection_hint_label.text() == "模型状态：正在检查接口连通性"
+    assert "正在验证当前配置" in window.connection_hint_label.toolTip()
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_connection_checked_updates_model_status_to_connected(qapp) -> None:
+    window = MainWindow()
+
+    window._handle_connection_checked("OK")
+
+    assert window.connection_hint_label.text() == "模型状态：接口连通 (OK)"
+    assert "接口连通性检查" in window.connection_hint_label.toolTip()
+    window.close()
+    window.deleteLater()
+
+
 def test_set_source_path_updates_source_and_output_dir(
     tmp_path: Path,
     qapp,
@@ -79,7 +185,7 @@ def test_commit_source_path_text_updates_source_and_output_dir(
     window.deleteLater()
 
 
-def test_handle_source_path_received_warns_when_language_mismatches(
+def test_handle_source_path_received_auto_switches_direction_without_warning(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
     qapp,
@@ -103,13 +209,50 @@ def test_handle_source_path_received_warns_when_language_mismatches(
     window = MainWindow()
     window.handle_source_path_received(str(source_file))
 
-    assert captured["title"] == "语言提示"
-    assert "不是中文" in captured["message"]
+    assert captured == {}
+    assert window.en_to_zh_radio.isChecked() is True
     window.close()
     window.deleteLater()
 
 
-def test_commit_source_path_text_warns_when_language_mismatches(
+def test_handle_source_path_received_auto_switches_to_en_to_zh_for_english_file(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "english.md"
+    source_file.write_text(
+        "This document explains the camera driver architecture in English.\n",
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    window.handle_source_path_received(str(source_file))
+
+    assert window.en_to_zh_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_source_path_received_auto_switches_to_zh_to_en_for_chinese_file(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "chinese.md"
+    source_file.write_text(
+        "本文档用于说明相机驱动架构和启动流程。\n",
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    window.en_to_zh_radio.setChecked(True)
+    window.handle_source_path_received(str(source_file))
+
+    assert window.zh_to_en_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
+def test_commit_source_path_text_auto_switches_direction_without_warning(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
     qapp,
@@ -134,8 +277,8 @@ def test_commit_source_path_text_warns_when_language_mismatches(
     window.source_path_edit.setText(str(source_file))
     window._commit_source_path_text()
 
-    assert captured["title"] == "语言提示"
-    assert "不是中文" in captured["message"]
+    assert captured == {}
+    assert window.en_to_zh_radio.isChecked() is True
     window.close()
     window.deleteLater()
 
@@ -377,13 +520,13 @@ def test_handle_reset_clicked_restores_idle_state(tmp_path: Path, qapp) -> None:
     source_file = tmp_path / "demo.md"
     source_file.write_text("# demo\n", encoding="utf-8")
 
-    window = MainWindow()
+    window = MainWindow(project_root=tmp_path)
     window.source_path_edit.setText(str(source_file))
     window.output_dir_edit.setText(str(tmp_path))
     window.en_to_zh_radio.setChecked(True)
     window.progress_bar.setValue(100)
     window.progress_label.setText("翻译完成")
-    window.connection_hint_label.setText("模型连接状态：已通过 (OK)")
+    window.connection_hint_label.setText("模型状态：接口连通 (OK)")
     window.start_button.setText("开始下一次翻译")
     window.log_output.appendPlainText("[测试] 临时日志")
 
@@ -395,7 +538,7 @@ def test_handle_reset_clicked_restores_idle_state(tmp_path: Path, qapp) -> None:
     assert window.zh_to_en_radio.isChecked() is True
     assert window.progress_bar.value() == 0
     assert window.progress_label.text() == "等待开始翻译"
-    assert window.connection_hint_label.text() == "模型连接状态：未检查"
+    assert window.connection_hint_label.text() == "模型状态：配置不完整"
     assert window.start_button.text() == "开始翻译"
     assert window.statusBar().currentMessage() == "界面已重置"
     assert "[系统] 界面已重置，可开始新的翻译任务。" in log_text
@@ -425,7 +568,7 @@ def test_handle_translation_failed_updates_ui_and_shows_error(
     assert window.progress_label.text() == "模型连接失败"
     assert captured["title"] == "模型连接失败"
     assert "network error" in captured["message"]
-    assert window.connection_hint_label.text() == "模型连接状态：失败"
+    assert window.connection_hint_label.text() == "模型状态：接口检查失败"
     window.close()
     window.deleteLater()
 

@@ -85,6 +85,20 @@ class DocumentTranslationPipeline:
         def format_elapsed(seconds: float) -> str:
             return f"{seconds:.2f}s"
 
+        def translation_progress(completed_batches: int, total_batches: int) -> int:
+            if total_batches <= 0:
+                return 45
+            return 45 + int((completed_batches / total_batches) * 45)
+
+        def translation_running_progress(
+            completed_batches: int,
+            total_batches: int,
+        ) -> int:
+            base_progress = translation_progress(completed_batches, total_batches)
+            if completed_batches >= total_batches:
+                return base_progress
+            return min(base_progress + 3, 89)
+
         overall_started_at = perf_counter()
         emit_progress("准备翻译任务", 0)
         emit_log(f"[文件] 开始读取：{task.source_path}")
@@ -163,25 +177,39 @@ class DocumentTranslationPipeline:
                 "[解析] 可翻译块数："
                 f"{sum(1 for block in protected_document.blocks if block.translatable)}"
             )
-            emit_log(f"[翻译] 片段总数：{len(segmented_document.segments)}")
-            emit_log(
-                f"[翻译] 总批次数："
-                f"{(len(segmented_document.segments) + settings.llm.batch_size - 1) // settings.llm.batch_size if segmented_document.segments else 0}"
+            total_translation_batches = (
+                (len(segmented_document.segments) + settings.llm.batch_size - 1)
+                // settings.llm.batch_size
+                if segmented_document.segments
+                else 0
             )
+            emit_log(f"[翻译] 片段总数：{len(segmented_document.segments)}")
+            emit_log(f"[翻译] 总批次数：{total_translation_batches}")
             emit_progress("Markdown 解析完成", 40)
 
             task_service = self.task_service_factory(client)
 
             def handle_batch_complete(batch_index: int, total_batches: int) -> None:
-                progress = 50 + int((batch_index / total_batches) * 40)
+                progress = translation_progress(batch_index, total_batches)
                 emit_progress(
-                    f"已完成批次 {batch_index}/{total_batches}",
+                    f"翻译中：已完成批次 {batch_index}/{total_batches}",
+                    progress,
+                )
+
+            def handle_batch_started(
+                batch_index: int,
+                total_batches: int,
+                completed_batches: int,
+            ) -> None:
+                progress = translation_running_progress(completed_batches, total_batches)
+                emit_progress(
+                    f"翻译中：正在处理第 {batch_index}/{total_batches} 批",
                     progress,
                 )
 
             emit_log("[翻译] 开始批量翻译。")
             emit_progress("开始批量翻译", 45)
-            emit_progress("正在等待首批结果", 50)
+            emit_progress(f"翻译中：已完成批次 0/{total_translation_batches}", 45)
             translation_started_at = perf_counter()
             try:
                 translation_result = task_service.translate_segmented_document(
@@ -189,6 +217,7 @@ class DocumentTranslationPipeline:
                     direction=task.direction,
                     glossary=glossary,
                     on_batch_complete=handle_batch_complete,
+                    on_batch_started=handle_batch_started,
                     on_log=emit_log,
                 )
             except LLMClientError as exc:
