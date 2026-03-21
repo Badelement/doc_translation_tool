@@ -4,6 +4,14 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+Improved:
+
+- Upgraded the Windows packaging workflow actions to Node 24 compatible versions to address GitHub Actions deprecation warnings during release builds
+
+Docs:
+
+- Recorded the CI workflow compatibility maintenance in `开发问题记录.md`
+
 ## v0.4.1 - 2026-03-21
 
 Fixed:
