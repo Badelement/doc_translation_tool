@@ -2,7 +2,7 @@
 
 Desktop tool for translating a single Markdown document between Chinese and English while preserving Markdown structure.
 
-Current version: `0.3.1`
+Current version: `0.3.2`
 
 ## What It Does
 

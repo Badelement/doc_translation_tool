@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded in this file.
 
+## v0.3.2 - 2026-03-21
+
+Fixed:
+
+- Reissued the Windows package from the correct release commit after the previous `v0.3.1` tag pointed to an older package-build commit and produced a `0.3.0` app bundle by mistake
+
+Improved:
+
+- Added explicit release notes clarifying that the placeholder-normalization and elapsed-time UI improvements are the intended changes included in the corrected package
+
 ## v0.3.1 - 2026-03-21
 
 Improved:
