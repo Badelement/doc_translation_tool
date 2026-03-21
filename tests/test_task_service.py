@@ -461,6 +461,46 @@ def test_translate_segmented_document_retries_when_placeholders_change_order() -
     assert "| Name | Description |" in result.final_markdown_text
 
 
+def test_translate_segmented_document_normalizes_placeholder_format_variants() -> None:
+    segmented = _build_segmented_document(
+        "| 名称 | 说明 |\n| --- | --- |\n",
+        max_segment_length=100,
+    )
+
+    class PlaceholderFormatClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text="@@ protect-0 @@ Name @@ protect-1 @@ Description",
+                ),
+                TranslationResult(
+                    id=items[1].id,
+                    translated_text="\\@\\@PROTECT_0002\\@\\@",
+                ),
+            ]
+
+    client = PlaceholderFormatClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="zh_to_en")
+
+    assert len(client.calls) == 1
+    assert "| Name | Description |" in result.final_markdown_text
+    assert "| --- | --- |" in result.final_markdown_text
+
+
 def test_translate_segmented_document_logs_retry_context() -> None:
     segmented = _build_segmented_document(
         "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",

@@ -29,6 +29,11 @@ class TranslationTaskService:
     """Batch translation orchestration on top of the LLM client."""
 
     _PLACEHOLDER_RE = re.compile(r"@@PROTECT_\d+@@")
+    _PLACEHOLDER_ESCAPED_AT_RE = re.compile(r"\\@")
+    _PLACEHOLDER_LOOSE_RE = re.compile(
+        r"@@\s*protect\s*[_-]\s*(\d+)\s*@@",
+        flags=re.IGNORECASE,
+    )
     _ZH_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
     _EN_WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]*\b")
     _SPLITTABLE_ERROR_PATTERNS = (
@@ -387,18 +392,24 @@ class TranslationTaskService:
         for item in results:
             source_text = source_items.get(item.id, "")
             source_placeholders = self._PLACEHOLDER_RE.findall(source_text)
-            translated_placeholders = self._PLACEHOLDER_RE.findall(item.translated_text)
+            normalized_translated_text = self._normalize_placeholder_tokens(
+                item.translated_text
+            )
+            translated_placeholders = self._PLACEHOLDER_RE.findall(
+                normalized_translated_text
+            )
             if translated_placeholders != source_placeholders:
                 raise LLMClientError(
                     "Translated text changed protected placeholder tokens or their order."
                 )
+            item.translated_text = normalized_translated_text
 
             if not self._PLACEHOLDER_RE.search(source_text):
                 continue
 
             translated_without_placeholders = self._PLACEHOLDER_RE.sub(
                 " ",
-                item.translated_text,
+                normalized_translated_text,
             )
             if direction == "zh_to_en" and self._ZH_CHAR_RE.search(
                 translated_without_placeholders
@@ -425,3 +436,10 @@ class TranslationTaskService:
     def _record_retry_attempt(self) -> None:
         with self._metrics_lock:
             self._retry_attempts += 1
+
+    def _normalize_placeholder_tokens(self, text: str) -> str:
+        unescaped_text = self._PLACEHOLDER_ESCAPED_AT_RE.sub("@", text)
+        return self._PLACEHOLDER_LOOSE_RE.sub(
+            lambda match: f"@@PROTECT_{int(match.group(1)):04d}@@",
+            unescaped_text,
+        )
