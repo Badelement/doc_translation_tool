@@ -2,6 +2,13 @@
 
 All notable changes to this project are recorded in this file.
 
+## v0.3.3 - 2026-03-21
+
+Fixed:
+
+- Corrected the placeholder-format normalization test so the Windows release workflow no longer fails on an invalid multi-item assumption when the segmented table input produces a single translation segment
+- Reissued the release after the previous `v0.3.2` tag was created before the final test fix and did not produce a successful Windows package
+
 ## v0.3.2 - 2026-03-21
 
 Fixed:

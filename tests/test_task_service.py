@@ -473,12 +473,8 @@ def test_translate_segmented_document_normalizes_placeholder_format_variants() -
             return [
                 TranslationResult(
                     id=items[0].id,
-                    translated_text="@@ protect-0 @@ Name @@ protect-1 @@ Description",
-                ),
-                TranslationResult(
-                    id=items[1].id,
-                    translated_text="\\@\\@PROTECT_0002\\@\\@",
-                ),
+                    translated_text="@@ protect-0 @@ Name @@ protect-1 @@ Description \\@\\@PROTECT_0002\\@\\@ @@ protect-3 @@",
+                )
             ]
 
     client = PlaceholderFormatClient(
