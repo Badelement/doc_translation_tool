@@ -545,15 +545,13 @@ class MainWindow(QMainWindow):
 
     def _handle_translation_succeeded(self, result: TranslationPipelineResult) -> None:
         self.progress_bar.setValue(100)
-        self.progress_label.setText("翻译完成")
-        self.statusBar().showMessage("翻译完成")
-        elapsed_seconds: float | None = None
-        if self._task_started_at is not None:
-            elapsed_seconds = perf_counter() - self._task_started_at
-            self._append_log(f"[完成] 总耗时：{self._format_elapsed(elapsed_seconds)}")
+        elapsed_seconds = result.overall_elapsed_seconds
+        completion_message = f"翻译完成（总耗时 {self._format_elapsed(elapsed_seconds)}）"
+        self.progress_label.setText(completion_message)
+        self.statusBar().showMessage(completion_message)
         self._append_log(f"[翻译] 总片段数：{result.total_segments}")
         self._append_log(f"[翻译] 总批次数：{result.total_batches}")
-        if elapsed_seconds is not None and result.total_batches > 0:
+        if result.total_batches > 0:
             average_batch_seconds = elapsed_seconds / result.total_batches
             self._append_log(f"[翻译] 平均每批耗时：{self._format_elapsed(average_batch_seconds)}")
         self._append_log(f"[翻译] 重试次数：{result.retry_attempts}")
@@ -586,7 +584,13 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.reset_button.setEnabled(True)
         self.start_button.setText("开始下一次翻译")
-        self.statusBar().showMessage("当前任务已结束，可继续下一次翻译")
+        current_status = self.statusBar().currentMessage()
+        if current_status.startswith("翻译完成"):
+            self.statusBar().showMessage(f"{current_status}，可继续下一次翻译")
+        elif current_status.endswith("失败"):
+            self.statusBar().showMessage(f"{current_status}，可调整后重试")
+        else:
+            self.statusBar().showMessage("当前任务已结束，可继续下一次翻译")
         self._task_started_at = None
         if self._worker is not None:
             self._worker.deleteLater()
