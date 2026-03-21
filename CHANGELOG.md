@@ -4,6 +4,19 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+## v0.4.1 - 2026-03-21
+
+Fixed:
+
+- Corrected parallel batch progress reporting so the GUI no longer jumps to `正在处理第最后一批/总批次` as soon as translation starts
+- Changed parallel batch scheduling to emit start-state updates only for batches that have actually entered the active worker window
+- Adjusted translation-stage progress calculation so the progress bar moves more visibly with completed batches, especially on large documents with many batches
+
+Docs:
+
+- Updated release version references in the repository README files and Chinese user guide
+- Recorded the progress-state troubleshooting and fix in `开发问题记录.md`
+
 ## v0.4.0 - 2026-03-21
 
 Improved:

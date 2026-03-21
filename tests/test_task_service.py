@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import threading
+import time
 
 import pytest
 
@@ -168,6 +169,88 @@ def test_translate_segmented_document_can_run_batches_in_parallel() -> None:
 
     assert result.successful_batches == result.total_batches
     assert client.max_active_calls >= 2
+
+
+def test_translate_segmented_document_parallel_start_progress_does_not_jump_to_last_batch() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。第五句再次补充。第六句收尾说明。",
+        max_segment_length=12,
+    )
+
+    class BlockingParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._active_calls = 0
+            self._lock = threading.Lock()
+            self.first_wave_started = threading.Event()
+            self.release_batches = threading.Event()
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            with self._lock:
+                self._active_calls += 1
+                if self._active_calls >= 2:
+                    self.first_wave_started.set()
+
+            self.release_batches.wait(timeout=1.0)
+            try:
+                return super().translate_batch(items, direction, glossary)
+            finally:
+                with self._lock:
+                    self._active_calls -= 1
+
+    client = BlockingParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2)
+    started_events: list[tuple[int, int, int]] = []
+    completion_events: list[tuple[int, int]] = []
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, Exception] = {}
+
+    def run_translation() -> None:
+        try:
+            result_holder["result"] = service.translate_segmented_document(
+                segmented,
+                direction="zh_to_en",
+                on_batch_started=lambda batch_index, total_batches, completed_batches: started_events.append(
+                    (batch_index, total_batches, completed_batches)
+                ),
+                on_batch_complete=lambda batch_index, total_batches: completion_events.append(
+                    (batch_index, total_batches)
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - defensive capture for thread
+            error_holder["error"] = exc
+
+    worker = threading.Thread(target=run_translation)
+    worker.start()
+
+    assert client.first_wave_started.wait(timeout=1.0) is True
+    deadline = time.time() + 0.2
+    while len(started_events) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert started_events[:2] == [(1, 3, 0), (2, 3, 0)]
+    time.sleep(0.05)
+    assert len(started_events) == 2
+
+    client.release_batches.set()
+    worker.join(timeout=1.0)
+
+    assert "error" not in error_holder
+    assert worker.is_alive() is False
+    assert result_holder["result"].total_batches == 3
+    assert completion_events[-1] == (3, 3)
+    assert started_events[2] == (3, 3, 1)
 
 
 def test_translate_segmented_document_raises_after_retry_limit() -> None:

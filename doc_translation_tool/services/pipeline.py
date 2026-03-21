@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from time import perf_counter
 from typing import Callable
@@ -42,6 +43,10 @@ class TranslationPipelineError(RuntimeError):
 
 class DocumentTranslationPipeline:
     """Run the full Markdown translation flow from input file to output file."""
+
+    _TRANSLATION_PROGRESS_START = 45
+    _TRANSLATION_PROGRESS_END = 95
+    _WRITE_OUTPUT_PROGRESS = 97
 
     def __init__(
         self,
@@ -87,8 +92,18 @@ class DocumentTranslationPipeline:
 
         def translation_progress(completed_batches: int, total_batches: int) -> int:
             if total_batches <= 0:
-                return 45
-            return 45 + int((completed_batches / total_batches) * 45)
+                return self._TRANSLATION_PROGRESS_START
+            if completed_batches <= 0:
+                return self._TRANSLATION_PROGRESS_START
+
+            stage_span = (
+                self._TRANSLATION_PROGRESS_END - self._TRANSLATION_PROGRESS_START
+            )
+            return min(
+                self._TRANSLATION_PROGRESS_END,
+                self._TRANSLATION_PROGRESS_START
+                + math.ceil((completed_batches / total_batches) * stage_span),
+            )
 
         def translation_running_progress(
             completed_batches: int,
@@ -97,7 +112,7 @@ class DocumentTranslationPipeline:
             base_progress = translation_progress(completed_batches, total_batches)
             if completed_batches >= total_batches:
                 return base_progress
-            return min(base_progress + 3, 89)
+            return min(base_progress + 1, self._TRANSLATION_PROGRESS_END - 1)
 
         overall_started_at = perf_counter()
         emit_progress("准备翻译任务", 0)
@@ -208,8 +223,11 @@ class DocumentTranslationPipeline:
                 )
 
             emit_log("[翻译] 开始批量翻译。")
-            emit_progress("开始批量翻译", 45)
-            emit_progress(f"翻译中：已完成批次 0/{total_translation_batches}", 45)
+            emit_progress("开始批量翻译", self._TRANSLATION_PROGRESS_START)
+            emit_progress(
+                f"翻译中：已完成批次 0/{total_translation_batches}",
+                self._TRANSLATION_PROGRESS_START,
+            )
             translation_started_at = perf_counter()
             try:
                 translation_result = task_service.translate_segmented_document(
@@ -227,7 +245,7 @@ class DocumentTranslationPipeline:
             )
 
             emit_log("[输出] 开始写入输出文件。")
-            emit_progress("正在写入输出文件", 92)
+            emit_progress("正在写入输出文件", self._WRITE_OUTPUT_PROGRESS)
             output_started_at = perf_counter()
             try:
                 output_result = self.output_writer.write_output(

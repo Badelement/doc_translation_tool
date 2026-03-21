@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import re
 import threading
 from dataclasses import dataclass, field
@@ -133,12 +133,20 @@ class TranslationTaskService:
                     on_batch_complete(successful_batches, total_batches)
         else:
             max_workers = min(self.parallel_batches, total_batches)
+            remaining_batches = iter(indexed_batches)
             with ThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="doc-translate-batch",
             ) as executor:
-                pending = {
-                    executor.submit(
+                pending: dict[object, int] = {}
+
+                def submit_next_batch(completed_batches: int) -> bool:
+                    try:
+                        batch_index, batch = next(remaining_batches)
+                    except StopIteration:
+                        return False
+
+                    future = executor.submit(
                         self._run_single_batch,
                         batch,
                         direction=direction,
@@ -147,20 +155,23 @@ class TranslationTaskService:
                         total_batches=total_batches,
                         on_log=on_log,
                     )
-                    for batch_index, batch in indexed_batches
-                }
+                    pending[future] = batch_index
+                    if on_batch_started is not None:
+                        on_batch_started(batch_index, total_batches, completed_batches)
+                    return True
 
-                if on_batch_started is not None:
-                    for batch_index, _batch in indexed_batches:
-                        on_batch_started(batch_index, total_batches, successful_batches)
+                for _ in range(max_workers):
+                    if not submit_next_batch(successful_batches):
+                        break
 
                 while pending:
-                    done, pending = wait(
+                    done, _ = wait(
                         pending,
-                        return_when=FIRST_EXCEPTION,
+                        return_when=FIRST_COMPLETED,
                     )
 
                     for future in done:
+                        pending.pop(future)
                         try:
                             batch_result = future.result()
                         except LLMClientError as exc:
@@ -175,6 +186,7 @@ class TranslationTaskService:
                         successful_batches += 1
                         if on_batch_complete is not None:
                             on_batch_complete(successful_batches, total_batches)
+                        submit_next_batch(successful_batches)
 
         rebuilt_blocks = self.rebuild_protected_block_texts(
             document,

@@ -4,7 +4,7 @@ Desktop tool for translating a single Markdown document between Chinese and Engl
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Current release: `0.4.0`
+Current release: `0.4.1`
 
 ## Overview
 
