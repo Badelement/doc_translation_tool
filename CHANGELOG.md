@@ -4,6 +4,8 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+## v0.4.3 - 2026-03-23
+
 Improved:
 
 - Added a single-segment placeholder-order rescue path: when a lone segment fails validation because protected placeholders were reordered, the tool retries that segment as smaller placeholder-bound chunks before giving up

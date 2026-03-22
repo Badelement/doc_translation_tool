@@ -175,4 +175,4 @@ def test_pyproject_dynamic_version_matches_package_version() -> None:
 
     assert 'dynamic = ["version"]' in content
     assert 'version = { attr = "doc_translation_tool.__version__" }' in content
-    assert __version__ == "0.4.2"
+    assert __version__ == "0.4.3"
