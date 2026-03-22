@@ -9,6 +9,17 @@ from doc_translation_tool.markdown.parser import MarkdownBlock, MarkdownDocument
 _FRONT_MATTER_KEY_VALUE_RE = re.compile(r"^(\s*)([A-Za-z0-9_-]+):(\s*)(.*)$")
 _FRONT_MATTER_BLOCK_START_RE = re.compile(r"^(\s*)([A-Za-z0-9_-]+):(\s*)([|>][-+]?)\s*$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$")
+_HTML_XML_TAG_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[^<>\n]*?)?\s*/?>")
+_FILE_LIKE_RE = re.compile(
+    r"\b[A-Za-z0-9][A-Za-z0-9._-]*\.(?:"
+    r"dts|dtbo|cfg|conf|mk|ko|sh|xml|json|h|c|cc|cpp|hpp|py|txt|bin|img|rc"
+    r")\b"
+)
+_PATH_LIKE_RE = re.compile(
+    r"(?<![@\w])(?:[A-Za-z]:\\|\.{1,2}/|/)"
+    r"(?:[A-Za-z0-9{}_.-]+(?:\\|/))+[A-Za-z0-9{}_.-]+"
+)
+_UPPER_CONSTANT_RE = re.compile(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b")
 
 
 @dataclass(slots=True)
@@ -375,7 +386,13 @@ class MarkdownProtector:
 
         for token in inline_tokens:
             if token.type == "text":
-                protected_parts.append(token.raw)
+                protected_text, text_placeholders = self._protect_embedded_markup(token.raw)
+                protected_text, literal_placeholders = self._protect_embedded_technical_literals(
+                    protected_text
+                )
+                placeholders.extend(text_placeholders)
+                placeholders.extend(literal_placeholders)
+                protected_parts.append(protected_text)
                 continue
 
             if token.type == "inline_code":
@@ -399,6 +416,82 @@ class MarkdownProtector:
             protected_parts.append(token.raw)
 
         return "".join(protected_parts), placeholders
+
+    def _protect_embedded_markup(self, text: str) -> tuple[str, list[ProtectedPlaceholder]]:
+        if not text:
+            return "", []
+
+        protected_parts: list[str] = []
+        placeholders: list[ProtectedPlaceholder] = []
+        last_index = 0
+
+        for match in _HTML_XML_TAG_RE.finditer(text):
+            protected_parts.append(text[last_index : match.start()])
+            raw_tag = match.group(0)
+            if raw_tag.lower() in {"<br>", "<br/>", "<br />"}:
+                protected_parts.append(raw_tag)
+            else:
+                placeholder = self._create_placeholder(raw_tag, "html_xml_tag")
+                placeholders.append(placeholder)
+                protected_parts.append(placeholder.token)
+            last_index = match.end()
+
+        protected_parts.append(text[last_index:])
+        return "".join(protected_parts), placeholders
+
+    def _protect_embedded_technical_literals(
+        self,
+        text: str,
+    ) -> tuple[str, list[ProtectedPlaceholder]]:
+        if not text:
+            return "", []
+
+        protected_text = text
+        placeholders: list[ProtectedPlaceholder] = []
+
+        for pattern, kind in (
+            (_PATH_LIKE_RE, "path_literal"),
+            (_FILE_LIKE_RE, "file_literal"),
+            (_UPPER_CONSTANT_RE, "upper_constant_literal"),
+        ):
+            protected_text, new_placeholders = self._replace_matches_with_placeholders(
+                protected_text,
+                pattern,
+                kind,
+            )
+            placeholders.extend(new_placeholders)
+
+        return protected_text, placeholders
+
+    def _replace_matches_with_placeholders(
+        self,
+        text: str,
+        pattern: re.Pattern[str],
+        kind: str,
+    ) -> tuple[str, list[ProtectedPlaceholder]]:
+        placeholders: list[ProtectedPlaceholder] = []
+        protected_parts: list[str] = []
+        last_index = 0
+
+        for match in pattern.finditer(text):
+            if self._is_inside_placeholder_token(text, match.start(), match.end()):
+                continue
+            protected_parts.append(text[last_index : match.start()])
+            placeholder = self._create_placeholder(match.group(0), kind)
+            placeholders.append(placeholder)
+            protected_parts.append(placeholder.token)
+            last_index = match.end()
+
+        protected_parts.append(text[last_index:])
+        return "".join(protected_parts), placeholders
+
+    def _is_inside_placeholder_token(self, text: str, start: int, end: int) -> bool:
+        return (
+            start >= 2
+            and end + 2 <= len(text)
+            and text[start - 2 : start] == "@@"
+            and text[end : end + 2] == "@@"
+        )
 
     def _create_placeholder(self, raw_text: str, kind: str) -> ProtectedPlaceholder:
         token = f"@@PROTECT_{self._placeholder_index:04d}@@"

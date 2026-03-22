@@ -140,3 +140,26 @@ def test_segment_table_by_packed_lines_to_reduce_request_count() -> None:
     assert len(segmented.segments) == 2
     assert segmented.segments[0].text.count("\n") >= 1
     assert "".join(segment.text for segment in segmented.segments) == protected.blocks[0].protected_text
+
+
+def test_segment_long_table_line_by_html_breaks_without_exceeding_limit() -> None:
+    text = (
+        "| 类型 | 格式 |\n"
+        "| --- | --- |\n"
+        "| Bayer RAW | V4L2_PIX_FMT_SBGGR16 <br> V4L2_PIX_FMT_SGBRG16 <br> "
+        "V4L2_PIX_FMT_SGRBG16 <br> V4L2_PIX_FMT_SRGGB16 <br> "
+        "V4L2_PIX_FMT_SBGGR14 <br> V4L2_PIX_FMT_SGBRG14 |\n"
+    )
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    segmenter = MarkdownSegmenter(max_segment_length=80)
+
+    protected = protector.protect(parser.parse(text))
+    segmented = segmenter.segment(protected)
+
+    assert len(segmented.blocks) == 1
+    assert segmented.blocks[0].block_type == "table"
+    assert len(segmented.segments) >= 3
+    assert all(len(segment.text) <= 80 for segment in segmented.segments)
+    assert "".join(segment.text for segment in segmented.segments) == protected.blocks[0].protected_text

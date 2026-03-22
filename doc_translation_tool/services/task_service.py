@@ -78,16 +78,32 @@ class TranslationTaskService:
         *,
         direction: str,
         glossary: list[dict[str, str]] | None = None,
+        existing_translations: dict[str, str] | None = None,
         on_batch_complete: Callable[[int, int], None] | None = None,
         on_batch_started: Callable[[int, int, int], None] | None = None,
+        on_batch_translated: Callable[[dict[str, str]], None] | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> BatchTranslationResult:
         segments = document.segments
-        total_batches = self._count_batches(len(segments))
-        translated_segment_texts: dict[str, str] = {}
+        valid_segment_ids = {segment.id for segment in segments}
+        translated_segment_texts: dict[str, str] = {
+            segment_id: translated_text
+            for segment_id, translated_text in (existing_translations or {}).items()
+            if segment_id in valid_segment_ids
+        }
+        remaining_segments = [
+            segment for segment in segments if segment.id not in translated_segment_texts
+        ]
+        total_batches = self._count_batches(len(remaining_segments))
         successful_batches = 0
         batch_errors: list[str] = []
         self._retry_attempts = 0
+
+        if existing_translations and on_log is not None and translated_segment_texts:
+            on_log(
+                "[续跑] 已复用缓存片段："
+                f"{len(translated_segment_texts)}/{len(segments)}"
+            )
 
         if not segments:
             if on_log is not None:
@@ -111,82 +127,55 @@ class TranslationTaskService:
                 batch_errors=[],
             )
 
-        indexed_batches = list(enumerate(self._iter_batches(segments), start=1))
+        if not remaining_segments:
+            rebuilt_blocks = self.rebuild_protected_block_texts(
+                document,
+                translated_segment_texts,
+            )
+            final_markdown_text = self.rebuild_markdown_text(
+                document,
+                translated_segment_texts,
+            )
+            return BatchTranslationResult(
+                translated_segment_texts=translated_segment_texts,
+                rebuilt_protected_block_texts=rebuilt_blocks,
+                final_markdown_text=final_markdown_text,
+                total_segments=len(segments),
+                total_batches=0,
+                successful_batches=0,
+                retry_attempts=0,
+                batch_errors=[],
+            )
+
+        indexed_batches = list(enumerate(self._iter_batches(remaining_segments), start=1))
 
         if self.parallel_batches == 1 or total_batches <= 1:
-            for batch_index, batch in indexed_batches:
-                if on_batch_started is not None:
-                    on_batch_started(batch_index, total_batches, successful_batches)
-                batch_result = self._run_single_batch(
-                    batch,
-                    direction=direction,
-                    glossary=glossary,
-                    batch_index=batch_index,
-                    total_batches=total_batches,
-                    on_log=on_log,
-                )
-                for item in batch_result:
-                    translated_segment_texts[item.id] = item.translated_text
-
-                successful_batches += 1
-                if on_batch_complete is not None:
-                    on_batch_complete(successful_batches, total_batches)
+            successful_batches = self._translate_batches_sequential(
+                indexed_batches,
+                direction=direction,
+                glossary=glossary,
+                total_batches=total_batches,
+                translated_segment_texts=translated_segment_texts,
+                successful_batches=successful_batches,
+                on_batch_translated=on_batch_translated,
+                on_batch_complete=on_batch_complete,
+                on_batch_started=on_batch_started,
+                on_log=on_log,
+            )
         else:
-            max_workers = min(self.parallel_batches, total_batches)
-            remaining_batches = iter(indexed_batches)
-            with ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix="doc-translate-batch",
-            ) as executor:
-                pending: dict[object, int] = {}
-
-                def submit_next_batch(completed_batches: int) -> bool:
-                    try:
-                        batch_index, batch = next(remaining_batches)
-                    except StopIteration:
-                        return False
-
-                    future = executor.submit(
-                        self._run_single_batch,
-                        batch,
-                        direction=direction,
-                        glossary=glossary,
-                        batch_index=batch_index,
-                        total_batches=total_batches,
-                        on_log=on_log,
-                    )
-                    pending[future] = batch_index
-                    if on_batch_started is not None:
-                        on_batch_started(batch_index, total_batches, completed_batches)
-                    return True
-
-                for _ in range(max_workers):
-                    if not submit_next_batch(successful_batches):
-                        break
-
-                while pending:
-                    done, _ = wait(
-                        pending,
-                        return_when=FIRST_COMPLETED,
-                    )
-
-                    for future in done:
-                        pending.pop(future)
-                        try:
-                            batch_result = future.result()
-                        except LLMClientError as exc:
-                            batch_errors.append(str(exc))
-                            for pending_future in pending:
-                                pending_future.cancel()
-                            raise
-
-                        for item in batch_result:
-                            translated_segment_texts[item.id] = item.translated_text
-
-                        successful_batches += 1
-                        if on_batch_complete is not None:
-                            on_batch_complete(successful_batches, total_batches)
-                        submit_next_batch(successful_batches)
+            successful_batches = self._translate_batches_parallel_adaptive(
+                indexed_batches,
+                direction=direction,
+                glossary=glossary,
+                total_batches=total_batches,
+                translated_segment_texts=translated_segment_texts,
+                successful_batches=successful_batches,
+                batch_errors=batch_errors,
+                on_batch_translated=on_batch_translated,
+                on_batch_complete=on_batch_complete,
+                on_batch_started=on_batch_started,
+                on_log=on_log,
+            )
 
         rebuilt_blocks = self.rebuild_protected_block_texts(
             document,
@@ -226,6 +215,193 @@ class TranslationTaskService:
             document,
             translated_segment_texts,
         )
+
+    def _translate_batches_sequential(
+        self,
+        indexed_batches,
+        *,
+        direction: str,
+        glossary: list[dict[str, str]] | None,
+        total_batches: int,
+        translated_segment_texts: dict[str, str],
+        successful_batches: int,
+        on_batch_translated: Callable[[dict[str, str]], None] | None,
+        on_batch_complete: Callable[[int, int], None] | None,
+        on_batch_started: Callable[[int, int, int], None] | None,
+        on_log: Callable[[str], None] | None,
+    ) -> int:
+        for batch_index, batch in indexed_batches:
+            if on_batch_started is not None:
+                on_batch_started(batch_index, total_batches, successful_batches)
+            batch_result = self._run_single_batch(
+                batch,
+                direction=direction,
+                glossary=glossary,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                on_log=on_log,
+            )
+            self._store_batch_result_items(
+                translated_segment_texts,
+                batch_result,
+                on_batch_translated=on_batch_translated,
+            )
+            successful_batches += 1
+            if on_batch_complete is not None:
+                on_batch_complete(successful_batches, total_batches)
+        return successful_batches
+
+    def _translate_batches_parallel_adaptive(
+        self,
+        indexed_batches,
+        *,
+        direction: str,
+        glossary: list[dict[str, str]] | None,
+        total_batches: int,
+        translated_segment_texts: dict[str, str],
+        successful_batches: int,
+        batch_errors: list[str],
+        on_batch_translated: Callable[[dict[str, str]], None] | None,
+        on_batch_complete: Callable[[int, int], None] | None,
+        on_batch_started: Callable[[int, int, int], None] | None,
+        on_log: Callable[[str], None] | None,
+    ) -> int:
+        remaining_batches = list(indexed_batches)
+        current_parallel_batches = min(self.parallel_batches, total_batches)
+
+        while remaining_batches:
+            if current_parallel_batches <= 1 or len(remaining_batches) <= 1:
+                return self._translate_batches_sequential(
+                    remaining_batches,
+                    direction=direction,
+                    glossary=glossary,
+                    total_batches=total_batches,
+                    translated_segment_texts=translated_segment_texts,
+                    successful_batches=successful_batches,
+                    on_batch_translated=on_batch_translated,
+                    on_batch_complete=on_batch_complete,
+                    on_batch_started=on_batch_started,
+                    on_log=on_log,
+                )
+
+            max_workers = min(current_parallel_batches, len(remaining_batches))
+            retry_batches: list[tuple[int, object]] | None = None
+
+            with ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="doc-translate-batch",
+            ) as executor:
+                pending: dict[object, tuple[int, object]] = {}
+                next_batch_offset = 0
+
+                def submit_batch(batch_info: tuple[int, object], completed_batches: int) -> None:
+                    batch_index, batch = batch_info
+                    future = executor.submit(
+                        self._run_single_batch,
+                        batch,
+                        direction=direction,
+                        glossary=glossary,
+                        batch_index=batch_index,
+                        total_batches=total_batches,
+                        on_log=on_log,
+                    )
+                    pending[future] = batch_info
+                    if on_batch_started is not None:
+                        on_batch_started(batch_index, total_batches, completed_batches)
+
+                while next_batch_offset < max_workers:
+                    submit_batch(remaining_batches[next_batch_offset], successful_batches)
+                    next_batch_offset += 1
+
+                while pending:
+                    done, _ = wait(
+                        pending,
+                        return_when=FIRST_COMPLETED,
+                    )
+
+                    rate_limited_failures: list[tuple[int, object]] = []
+                    fatal_error: LLMClientError | None = None
+
+                    for future in done:
+                        batch_info = pending.pop(future)
+                        try:
+                            batch_result = future.result()
+                        except LLMClientError as exc:
+                            batch_errors.append(str(exc))
+                            if fatal_error is None and self._is_rate_limit_error(exc):
+                                rate_limited_failures.append(batch_info)
+                                continue
+                            if fatal_error is None:
+                                fatal_error = exc
+                            continue
+
+                        self._store_batch_result_items(
+                            translated_segment_texts,
+                            batch_result,
+                            on_batch_translated=on_batch_translated,
+                        )
+                        successful_batches += 1
+                        if on_batch_complete is not None:
+                            on_batch_complete(successful_batches, total_batches)
+                        if (
+                            next_batch_offset < len(remaining_batches)
+                            and len(pending) < current_parallel_batches
+                        ):
+                            submit_batch(
+                                remaining_batches[next_batch_offset],
+                                successful_batches,
+                            )
+                            next_batch_offset += 1
+
+                    if fatal_error is not None:
+                        for pending_future in pending:
+                            pending_future.cancel()
+                        raise fatal_error
+
+                    if rate_limited_failures:
+                        for pending_future in pending:
+                            pending_future.cancel()
+                        retry_batches = sorted(
+                            [
+                                *rate_limited_failures,
+                                *pending.values(),
+                                *remaining_batches[next_batch_offset:],
+                            ],
+                            key=lambda item: item[0],
+                        )
+                        lowered_parallel_batches = max(1, current_parallel_batches // 2)
+                        if on_log is not None:
+                            failed_batch_labels = ", ".join(
+                                str(batch_index) for batch_index, _ in rate_limited_failures
+                            )
+                            on_log(
+                                "[限流] 检测到 429/限流错误，"
+                                f"批次 {failed_batch_labels} 将降并发重试："
+                                f"{current_parallel_batches} -> {lowered_parallel_batches}"
+                            )
+                        current_parallel_batches = lowered_parallel_batches
+                        break
+
+            if retry_batches is None:
+                return successful_batches
+
+            remaining_batches = retry_batches
+
+        return successful_batches
+
+    def _store_batch_result_items(
+        self,
+        translated_segment_texts: dict[str, str],
+        batch_result,
+        *,
+        on_batch_translated: Callable[[dict[str, str]], None] | None = None,
+    ) -> None:
+        new_translations: dict[str, str] = {}
+        for item in batch_result:
+            translated_segment_texts[item.id] = item.translated_text
+            new_translations[item.id] = item.translated_text
+        if on_batch_translated is not None and new_translations:
+            on_batch_translated(new_translations)
 
     def _run_single_batch(
         self,
@@ -455,6 +631,15 @@ class TranslationTaskService:
     def _record_retry_attempt(self) -> None:
         with self._metrics_lock:
             self._retry_attempts += 1
+
+    def _is_rate_limit_error(self, error: LLMClientError) -> bool:
+        message = str(error).upper()
+        return (
+            "429" in message
+            or "TOO MANY REQUESTS" in message
+            or "RATE LIMITED" in message
+            or "THROTTL" in message
+        )
 
     def _normalize_placeholder_tokens(self, text: str) -> str:
         unescaped_text = self._PLACEHOLDER_ESCAPED_AT_RE.sub("@", text)

@@ -17,6 +17,10 @@ from doc_translation_tool.services.output_writer import (
     OutputWriteResult,
 )
 from doc_translation_tool.services.task_service import BatchTranslationResult, TranslationTaskService
+from doc_translation_tool.services.translation_cache import (
+    TranslationCheckpoint,
+    TranslationCheckpointCache,
+)
 
 
 @dataclass(slots=True)
@@ -60,6 +64,7 @@ class DocumentTranslationPipeline:
         output_writer: MarkdownOutputWriter | None = None,
         task_service_factory: Callable[[object], TranslationTaskService] | None = None,
         glossary_loader: Callable[[str | Path], list[dict[str, str]]] = load_glossary,
+        checkpoint_cache: TranslationCheckpointCache | None = None,
     ) -> None:
         self.project_root = Path(project_root)
         self.settings_loader = settings_loader
@@ -70,6 +75,7 @@ class DocumentTranslationPipeline:
         self.output_writer = output_writer or MarkdownOutputWriter()
         self.task_service_factory = task_service_factory or TranslationTaskService
         self.glossary_loader = glossary_loader
+        self.checkpoint_cache = checkpoint_cache or TranslationCheckpointCache()
 
     def execute(
         self,
@@ -202,6 +208,26 @@ class DocumentTranslationPipeline:
             emit_log(f"[翻译] 总批次数：{total_translation_batches}")
             emit_progress("Markdown 解析完成", 40)
 
+            cache_path = self.checkpoint_cache.build_cache_path(
+                source_path=task.source_path,
+                output_dir=task.output_dir,
+                direction=task.direction,
+            )
+            document_fingerprint = self.checkpoint_cache.build_document_fingerprint(
+                segmented_document
+            )
+            cached_translations = self.checkpoint_cache.load(
+                cache_path,
+                source_path=task.source_path,
+                direction=task.direction,
+                document_fingerprint=document_fingerprint,
+            )
+            if cached_translations:
+                emit_log(
+                    "[续跑] 已加载缓存片段："
+                    f"{len(cached_translations)}/{len(segmented_document.segments)}"
+                )
+
             task_service = self.task_service_factory(client)
 
             def handle_batch_complete(batch_index: int, total_batches: int) -> None:
@@ -229,13 +255,30 @@ class DocumentTranslationPipeline:
                 self._TRANSLATION_PROGRESS_START,
             )
             translation_started_at = perf_counter()
+
+            checkpoint_translations = dict(cached_translations)
+
+            def persist_checkpoint(new_translations: dict[str, str]) -> None:
+                checkpoint_translations.update(new_translations)
+                self.checkpoint_cache.save(
+                    cache_path,
+                    TranslationCheckpoint(
+                        source_path=str(task.source_path),
+                        direction=task.direction,
+                        document_fingerprint=document_fingerprint,
+                        translated_segment_texts=checkpoint_translations,
+                    ),
+                )
+
             try:
                 translation_result = task_service.translate_segmented_document(
                     segmented_document,
                     direction=task.direction,
                     glossary=glossary,
+                    existing_translations=cached_translations,
                     on_batch_complete=handle_batch_complete,
                     on_batch_started=handle_batch_started,
+                    on_batch_translated=persist_checkpoint,
                     on_log=emit_log,
                 )
             except LLMClientError as exc:
@@ -261,6 +304,7 @@ class DocumentTranslationPipeline:
                 f"[输出] 输出文件写入完成，耗时 {format_elapsed(perf_counter() - output_started_at)}。"
             )
             emit_log(f"[输出] 输出文件路径：{output_result.output_path}")
+            self.checkpoint_cache.clear(cache_path)
             overall_elapsed_seconds = perf_counter() - overall_started_at
             emit_log(f"[完成] 总耗时：{format_elapsed(overall_elapsed_seconds)}。")
             emit_progress("翻译完成", 100)

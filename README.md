@@ -4,7 +4,7 @@ Desktop tool for translating a single Markdown document between Chinese and Engl
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Current release: `0.4.1`
+Current release: `0.4.2`
 
 ## Overview
 
@@ -27,6 +27,9 @@ This project focuses on a practical internal workflow:
 - Show startup model-config status before a translation run begins
 - Show translation progress with batch-based running and completion states
 - Preserve Markdown structure, protected placeholders, tables and front matter rules
+- Protect embedded HTML/XML-style tags, common technical file names, path literals, and uppercase technical constants
+- Resume large translation runs from cached segment results after a failure
+- Reduce concurrency automatically after `429` / rate-limit errors during parallel batch translation
 - Write output to a new file instead of overwriting the source file
 
 ## Quick Start
@@ -46,6 +49,26 @@ For packaged Windows use:
 9. Start translation and watch the batch-based progress updates
 
 Most users do not need to edit any other config fields.
+
+## Complex Technical Documents
+
+The tool is now tuned more aggressively for large technical Markdown documents that contain heavy tables, paths, config snippets, and mixed technical literals.
+
+Recent reliability improvements include:
+
+- Split overlong table rows more safely, especially when cells contain many `<br>`-separated values
+- Protect embedded HTML/XML-style tags so tag-shaped literals are less likely to be altered
+- Protect common file names, module names, and path-like literals from accidental translation
+- Protect many uppercase technical constants such as kernel-style macro names
+- Reduce batch concurrency automatically when the model endpoint returns `429` or other rate-limit signals
+- Resume from cached translated segments after an interrupted large-document run
+
+Practical recommendations for complex documents:
+
+- Start with `batch_size=4` and `parallel_batches=1` or `2` if your endpoint is rate-limited
+- Keep glossary entries for product names and domain-specific terminology
+- Re-run failed large jobs with the same source file and output directory so the checkpoint cache can be reused
+- Treat the generated translation as a technical draft and review tables, constants, and code-adjacent prose before release
 
 ## Runtime Config
 

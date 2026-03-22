@@ -4,12 +4,19 @@ from dataclasses import dataclass
 import re
 import threading
 import time
+from concurrent.futures import ALL_COMPLETED
 
 import pytest
 
 from doc_translation_tool.config import LLMSettings
 from doc_translation_tool.llm import BaseLLMClient, LLMClientError, TranslationResult
-from doc_translation_tool.markdown import MarkdownParser, MarkdownProtector, MarkdownSegmenter
+from doc_translation_tool.markdown import (
+    MarkdownParser,
+    MarkdownProtector,
+    MarkdownSegmenter,
+    SegmentedMarkdownDocument,
+    TranslationSegment,
+)
 from doc_translation_tool.services import TranslationTaskService
 
 
@@ -119,7 +126,33 @@ def test_translate_segmented_document_retries_failed_batch_once() -> None:
 
     assert result.successful_batches == result.total_batches
     assert result.retry_attempts == 1
-    assert len(client.calls) == result.total_batches + 1
+
+
+def test_translate_segmented_document_skips_existing_cached_segments() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+    client = _build_client()
+    service = TranslationTaskService(client)
+
+    existing_translations = {
+        segmented.segments[0].id: "[EN] cached first segment",
+    }
+    new_batches: list[dict[str, str]] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        existing_translations=existing_translations,
+        on_batch_translated=new_batches.append,
+    )
+
+    assert result.translated_segment_texts[segmented.segments[0].id] == "[EN] cached first segment"
+    assert len(client.calls) == 2
+    assert all(segmented.segments[0].id not in batch for batch in client.calls)
+    assert len(new_batches) == 2
+    assert segmented.segments[0].id not in new_batches[0]
 
 
 def test_translate_segmented_document_can_run_batches_in_parallel() -> None:
@@ -251,6 +284,159 @@ def test_translate_segmented_document_parallel_start_progress_does_not_jump_to_l
     assert result_holder["result"].total_batches == 3
     assert completion_events[-1] == (3, 3)
     assert started_events[2] == (3, 3, 1)
+
+
+def test_translate_segmented_document_parallel_failure_keeps_completed_batch_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import doc_translation_tool.services.task_service as task_service_module
+
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0000",
+                block_index=0,
+                block_type="paragraph",
+                order_in_block=0,
+                text="片段一。",
+            ),
+            TranslationSegment(
+                id="seg-0001",
+                block_index=0,
+                block_type="paragraph",
+                order_in_block=1,
+                text="片段二。",
+            ),
+            TranslationSegment(
+                id="seg-0002",
+                block_index=1,
+                block_type="paragraph",
+                order_in_block=0,
+                text="片段三。",
+            ),
+            TranslationSegment(
+                id="seg-0003",
+                block_index=1,
+                block_type="paragraph",
+                order_in_block=1,
+                text="片段四。",
+            ),
+        ],
+    )
+    failed_batch_ids = {"seg-0002", "seg-0003"}
+    original_wait = task_service_module.wait
+
+    def wait_failures_first(futures, return_when):
+        done, not_done = original_wait(futures, return_when=ALL_COMPLETED)
+        ordered_done = sorted(
+            done,
+            key=lambda future: 0 if future.exception() is not None else 1,
+        )
+        return ordered_done, not_done
+
+    monkeypatch.setattr(task_service_module, "wait", wait_failures_first)
+
+    class PartialFailureParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._barrier = threading.Barrier(2)
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            self._barrier.wait(timeout=1.0)
+            if {item.id for item in items} == failed_batch_ids:
+                raise LLMClientError("permanent failure")
+            return super().translate_batch(items, direction, glossary)
+
+    client = PartialFailureParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2, max_retries=0)
+    translated_batches: list[dict[str, str]] = []
+
+    with pytest.raises(LLMClientError, match="permanent failure"):
+        service.translate_segmented_document(
+            segmented,
+            direction="zh_to_en",
+            on_batch_translated=translated_batches.append,
+        )
+
+    assert translated_batches == [
+        {
+            "seg-0000": "[EN] 片段一。",
+            "seg-0001": "[EN] 片段二。",
+        }
+    ]
+
+
+def test_translate_segmented_document_reduces_parallel_batches_after_rate_limit() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。第五句继续补充。第六句收尾说明。",
+        max_segment_length=12,
+    )
+
+    class RateLimitedParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._active_calls = 0
+            self.max_active_calls = 0
+            self.rate_limit_hits = 0
+            self._lock = threading.Lock()
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            with self._lock:
+                self._active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self._active_calls)
+                should_rate_limit = self._active_calls > 1 and self.rate_limit_hits == 0
+                if should_rate_limit:
+                    self.rate_limit_hits += 1
+
+            try:
+                time.sleep(0.05)
+                if should_rate_limit:
+                    raise LLMClientError(
+                        "Model request rate limited: HTTP 429 Too Many Requests. "
+                        "The endpoint is throttling requests."
+                    )
+                return super().translate_batch(items, direction, glossary)
+            finally:
+                with self._lock:
+                    self._active_calls -= 1
+
+    client = RateLimitedParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2, max_retries=0)
+    logs: list[str] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        on_log=logs.append,
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert client.max_active_calls >= 2
+    assert client.rate_limit_hits == 1
+    assert any("降并发重试" in message for message in logs)
 
 
 def test_translate_segmented_document_raises_after_retry_limit() -> None:

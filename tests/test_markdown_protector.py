@@ -235,6 +235,110 @@ def test_restore_front_matter_keeps_keys_and_non_translatable_fields_unchanged()
     )
 
 
+def test_protect_paragraph_embedded_html_xml_tags_but_keep_surrounding_text() -> None:
+    text = '请检查 <platform_info> 与 <dump dirpath="out/"/> 配置。\n'
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "paragraph"
+    assert block.translatable is True
+    assert "<platform_info>" not in block.protected_text
+    assert '<dump dirpath="out/"/>' not in block.protected_text
+    assert block.protected_text.count("@@PROTECT_") >= 2
+    assert "请检查 " in block.protected_text
+    assert " 配置。" in block.protected_text
+    assert protector.restore_document(protected) == text
+
+
+def test_protect_table_keeps_html_break_tags_visible_for_segment_splitting() -> None:
+    text = (
+        "| 类型 | 格式 |\n"
+        "| --- | --- |\n"
+        "| Bayer RAW | V4L2_PIX_FMT_SBGGR16 <br> V4L2_PIX_FMT_SGBRG16 |\n"
+    )
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "table"
+    assert "<br>" in block.protected_text
+    assert protector.restore_document(protected) == text
+
+
+def test_protect_paragraph_embedded_paths_and_filenames() -> None:
+    text = (
+        "请修改 board.dts 并执行 ./build.sh，然后检查 "
+        "/device/config/chips/{IC}/configs/{BOARD}/{KERNEL_VERSION}/board.dts。\n"
+    )
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "paragraph"
+    assert "board.dts" not in block.protected_text
+    assert "./build.sh" not in block.protected_text
+    assert "/device/config/chips/{IC}/configs/{BOARD}/{KERNEL_VERSION}/board.dts" not in block.protected_text
+    assert block.protected_text.count("@@PROTECT_") >= 3
+    assert protector.restore_document(protected) == text
+
+
+def test_protect_paragraph_does_not_treat_fraction_like_path() -> None:
+    text = "支持 1/2 分频和 3/4 模式。\n"
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "paragraph"
+    assert "1/2" in block.protected_text
+    assert "3/4" in block.protected_text
+    assert block.protected_text.count("@@PROTECT_") == 0
+    assert protector.restore_document(protected) == text
+
+
+def test_protect_paragraph_upper_constant_literals() -> None:
+    text = "请保持 GPIO_ACTIVE_LOW 和 POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT 不变。\n"
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "paragraph"
+    assert "GPIO_ACTIVE_LOW" not in block.protected_text
+    assert "POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT" not in block.protected_text
+    assert block.protected_text.count("@@PROTECT_") >= 2
+    assert protector.restore_document(protected) == text
+
+
+def test_protect_paragraph_does_not_overprotect_short_uppercase_words() -> None:
+    text = "RTC 模块和 PMIC 说明需要翻译。\n"
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    protected = protector.protect(parser.parse(text))
+
+    assert len(protected.blocks) == 1
+    block = protected.blocks[0]
+    assert block.block_type == "paragraph"
+    assert "RTC" in block.protected_text
+    assert "PMIC" in block.protected_text
+    assert protector.restore_document(protected) == text
+
+
 def test_protect_front_matter_multiline_field_only_exposes_allowed_body_content() -> None:
     text = (
         "---\n"

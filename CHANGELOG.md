@@ -4,13 +4,31 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+## v0.4.2 - 2026-03-22
+
 Improved:
 
 - Upgraded the Windows packaging workflow actions to Node 24 compatible versions to address GitHub Actions deprecation warnings during release builds
+- Hardened Markdown segmentation for complex technical tables by splitting overlong table rows more safely, especially when cells contain many `<br>`-separated technical literals
+- Protected embedded HTML/XML-style tags inside translatable text so configuration snippets and tag-shaped literals are less likely to be altered by the model
+- Protected common technical file names and path literals such as `board.dts`, `build.sh`, `.ko` modules, and structured config paths from accidental translation
+- Added adaptive parallel-batch fallback for `429` / rate-limit failures so unfinished batches can continue at a lower concurrency instead of failing the whole run immediately
+- Added lightweight translation checkpoint caching so large-document runs can resume from already translated segments after a failure
+- Preserved successful results from completed parallel batches even when another batch in the same completion wave fails, so checkpoint callbacks can still save finished segments before the run aborts
+- Added `scripts/run_tests.ps1` so local pytest runs use repository-scoped temp and cache directories under `.tmp/pytest` instead of scattering new cache artifacts in the repo root
+
+Fixed:
+
+- Eliminated over-limit translation segments produced by certain long table rows in complex Markdown technical documents
+- Reduced the chance of malformed or semantically broken output caused by the model translating technical tags, file names, or path literals that should remain stable
+- Reduced wasted work when large translation tasks fail late in the run by reusing previously translated segments on the next attempt
+- Reduced lost progress during mixed parallel outcomes where one batch succeeds but another fails in the same completion wave
 
 Docs:
 
-- Recorded the CI workflow compatibility maintenance in `开发问题记录.md`
+- Updated release version references in the repository README files and user guide
+- Recorded the CI workflow compatibility maintenance in the development issue log
+- Recorded the recent complex-document reliability work in the development issue log
 
 ## v0.4.1 - 2026-03-21
 

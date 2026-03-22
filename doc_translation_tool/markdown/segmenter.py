@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 
 from doc_translation_tool.markdown.protector import (
     ProtectedMarkdownBlock,
@@ -44,6 +45,8 @@ class SegmentedMarkdownDocument:
 
 class MarkdownSegmenter:
     """Split protected Markdown text into stable, model-friendly segments."""
+
+    _HTML_BREAK_RE = re.compile(r"(<br\s*/?>)", flags=re.IGNORECASE)
 
     def __init__(self, *, max_segment_length: int = 500) -> None:
         if max_segment_length <= 0:
@@ -158,10 +161,14 @@ class MarkdownSegmenter:
         if not lines:
             return []
 
+        expanded_lines: list[str] = []
+        for line in lines:
+            expanded_lines.extend(self._split_table_line(line))
+
         packed: list[str] = []
         current = ""
 
-        for line in lines:
+        for line in expanded_lines:
             if not current:
                 current = line
                 continue
@@ -176,6 +183,25 @@ class MarkdownSegmenter:
             packed.append(current)
 
         return packed
+
+    def _split_table_line(self, line: str) -> list[str]:
+        if len(line) <= self.max_segment_length:
+            return [line]
+
+        if self._HTML_BREAK_RE.search(line) is None:
+            return [line]
+
+        html_break_chunks = self._split_by_html_break(line)
+        html_break_segments = self._pack_chunks(html_break_chunks)
+        if len(html_break_segments) > 1 and self._all_within_limit(html_break_segments):
+            return html_break_segments
+
+        whitespace_chunks = self._split_by_whitespace(line)
+        whitespace_segments = self._pack_chunks(whitespace_chunks)
+        if self._all_within_limit(whitespace_segments):
+            return whitespace_segments
+
+        return self._hard_split(line)
 
     def _pack_chunks(self, chunks: list[str]) -> list[str]:
         if not chunks:
@@ -206,6 +232,32 @@ class MarkdownSegmenter:
             packed.append(current)
 
         return packed
+
+    def _split_by_html_break(self, text: str) -> list[str]:
+        parts = self._HTML_BREAK_RE.split(text)
+        if len(parts) == 1:
+            return [text] if text else []
+
+        chunks: list[str] = []
+        current = ""
+        for part in parts:
+            if not part:
+                continue
+            current += part
+            if self._HTML_BREAK_RE.fullmatch(part):
+                chunks.append(current)
+                current = ""
+
+        if current:
+            chunks.append(current)
+
+        return [chunk for chunk in chunks if chunk]
+
+    def _split_by_whitespace(self, text: str) -> list[str]:
+        chunks = re.findall(r"\S+\s*", text)
+        if chunks:
+            return chunks
+        return [text] if text else []
 
     def _hard_split(self, text: str) -> list[str]:
         return [

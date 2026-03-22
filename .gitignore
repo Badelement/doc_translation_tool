@@ -11,3 +11,6 @@ build-macos/
 dist/
 dist-macos/
 *.egg-info/
+.tmp/
+.pytest_tmp/
+pytest-cache-files-*/
