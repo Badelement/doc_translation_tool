@@ -33,6 +33,10 @@ class TranslationPipelineResult:
     total_segments: int
     total_batches: int
     retry_attempts: int = 0
+    reused_cached_segments: int = 0
+    rate_limit_backoff_count: int = 0
+    split_batch_fallback_count: int = 0
+    single_segment_placeholder_fallback_count: int = 0
     overall_elapsed_seconds: float = 0.0
 
 
@@ -286,6 +290,15 @@ class DocumentTranslationPipeline:
             emit_log(
                 f"[翻译] 批量翻译完成，耗时 {format_elapsed(perf_counter() - translation_started_at)}。"
             )
+            emit_log(
+                "[stats] [翻译] 汇总："
+                f"复用缓存片段 {translation_result.reused_cached_segments}，"
+                f"重试 {translation_result.retry_attempts} 次，"
+                f"429降并发 {translation_result.rate_limit_backoff_count} 次，"
+                f"拆批回退 {translation_result.split_batch_fallback_count} 次，"
+                "单片段保序救援 "
+                f"{translation_result.single_segment_placeholder_fallback_count} 次。"
+            )
 
             emit_log("[输出] 开始写入输出文件。")
             emit_progress("正在写入输出文件", self._WRITE_OUTPUT_PROGRESS)
@@ -333,5 +346,11 @@ class DocumentTranslationPipeline:
             total_segments=translation_result.total_segments,
             total_batches=translation_result.total_batches,
             retry_attempts=translation_result.retry_attempts,
+            reused_cached_segments=translation_result.reused_cached_segments,
+            rate_limit_backoff_count=translation_result.rate_limit_backoff_count,
+            split_batch_fallback_count=translation_result.split_batch_fallback_count,
+            single_segment_placeholder_fallback_count=(
+                translation_result.single_segment_placeholder_fallback_count
+            ),
             overall_elapsed_seconds=overall_elapsed_seconds,
         )

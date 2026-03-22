@@ -97,7 +97,7 @@ def test_pipeline_resumes_from_cached_segments_and_clears_checkpoint() -> None:
             project_root=project_root,
             settings_loader=lambda _root: settings,
             client_factory=lambda _settings: client,
-            segmenter=segmenter,
+            segmenter=MarkdownSegmenter(max_segment_length=12),
             checkpoint_cache=cache,
         )
 
@@ -112,6 +112,7 @@ def test_pipeline_resumes_from_cached_segments_and_clears_checkpoint() -> None:
         assert client.closed is True
         assert len(client.calls) == 2
         assert all(segmented_document.segments[0].id not in batch for batch in client.calls)
+        assert result.reused_cached_segments == 1
         assert Path(result.output_path).exists() is True
         assert cache_path.exists() is False
     finally:

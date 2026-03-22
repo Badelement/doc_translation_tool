@@ -149,6 +149,8 @@ def test_translate_segmented_document_skips_existing_cached_segments() -> None:
     )
 
     assert result.translated_segment_texts[segmented.segments[0].id] == "[EN] cached first segment"
+    assert result.reused_cached_segments == 1
+    assert result.rate_limit_backoff_count == 0
     assert len(client.calls) == 2
     assert all(segmented.segments[0].id not in batch for batch in client.calls)
     assert len(new_batches) == 2
@@ -378,6 +380,196 @@ def test_translate_segmented_document_parallel_failure_keeps_completed_batch_cal
     ]
 
 
+def test_translate_segmented_document_recovers_single_segment_order_error_with_two_placeholders() -> None:
+    segment_text = "3. Edit @@PROTECT_0009@@ in the same folder as @@PROTECT_0010@@"
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0029",
+                block_index=0,
+                block_type="list_item",
+                order_in_block=0,
+                text=segment_text,
+            )
+        ],
+    )
+
+    class OrderErrorThenChunkSuccessClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            results: list[TranslationResult] = []
+            for item in items:
+                if item.text == segment_text:
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "3. 在与 @@PROTECT_0010@@ 相同的文件夹中编辑 "
+                                "@@PROTECT_0009@@"
+                            ),
+                        )
+                    )
+                    continue
+
+                if item.text == "3. Edit @@PROTECT_0009@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text="3. 编辑 @@PROTECT_0009@@",
+                        )
+                    )
+                    continue
+
+                if item.text == " in the same folder as @@PROTECT_0010@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=" 在与 @@PROTECT_0010@@ 相同的文件夹中",
+                        )
+                    )
+                    continue
+
+                raise AssertionError(f"Unexpected item text: {item.text!r}")
+            return results
+
+    client = OrderErrorThenChunkSuccessClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=2,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=2)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="en_to_zh",
+    )
+
+    assert result.translated_segment_texts["seg-0029"] == (
+        "3. 编辑 @@PROTECT_0009@@ 在与 @@PROTECT_0010@@ 相同的文件夹中"
+    )
+    assert result.single_segment_placeholder_fallback_count == 1
+    assert client.calls == [
+        ["seg-0029"],
+        ["seg-0029"],
+        ["seg-0029"],
+        ["seg-0029__phchunk_00", "seg-0029__phchunk_01"],
+    ]
+
+
+def test_translate_segmented_document_recovers_single_segment_order_error_with_three_placeholders() -> None:
+    segment_text = (
+        "* 使用 @@PROTECT_0761@@ 作为输入，经过 @@PROTECT_0762@@ 场景下的算法链 "
+        "@@PROTECT_0763@@ 处理后，通过 audiocodec 进行播放。"
+    )
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0516",
+                block_index=0,
+                block_type="list_item",
+                order_in_block=0,
+                text=segment_text,
+            )
+        ],
+    )
+
+    class ThreePlaceholderOrderErrorClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            results: list[TranslationResult] = []
+            for item in items:
+                if item.text == segment_text:
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "* Use @@PROTECT_0761@@ as input, then play via audiocodec "
+                                "after @@PROTECT_0763@@ is processed in the "
+                                "@@PROTECT_0762@@ scenario."
+                            ),
+                        )
+                    )
+                    continue
+
+                if item.text == "* 使用 @@PROTECT_0761@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text="* Use @@PROTECT_0761@@",
+                        )
+                    )
+                    continue
+
+                if item.text == " 作为输入，经过 @@PROTECT_0762@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=" as input, processed in the @@PROTECT_0762@@",
+                        )
+                    )
+                    continue
+
+                if (
+                    item.text
+                    == " 场景下的算法链 @@PROTECT_0763@@ 处理后，通过 audiocodec 进行播放。"
+                ):
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                " scenario by the @@PROTECT_0763@@ algorithm chain, "
+                                "then play via audiocodec."
+                            ),
+                        )
+                    )
+                    continue
+
+                raise AssertionError(f"Unexpected item text: {item.text!r}")
+            return results
+
+    client = ThreePlaceholderOrderErrorClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=2,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=2)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert result.translated_segment_texts["seg-0516"] == (
+        "* Use @@PROTECT_0761@@ as input, processed in the @@PROTECT_0762@@"
+        " scenario by the @@PROTECT_0763@@ algorithm chain, then play via audiocodec."
+    )
+    assert result.single_segment_placeholder_fallback_count == 1
+    assert client.calls == [
+        ["seg-0516"],
+        ["seg-0516"],
+        ["seg-0516"],
+        [
+            "seg-0516__phchunk_00",
+            "seg-0516__phchunk_01",
+            "seg-0516__phchunk_02",
+        ],
+    ]
+
+
 def test_translate_segmented_document_reduces_parallel_batches_after_rate_limit() -> None:
     segmented = _build_segmented_document(
         "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。第五句继续补充。第六句收尾说明。",
@@ -434,6 +626,7 @@ def test_translate_segmented_document_reduces_parallel_batches_after_rate_limit(
     )
 
     assert result.successful_batches == result.total_batches
+    assert result.rate_limit_backoff_count == 1
     assert client.max_active_calls >= 2
     assert client.rate_limit_hits == 1
     assert any("降并发重试" in message for message in logs)
@@ -874,6 +1067,7 @@ def test_translate_segmented_document_splits_failed_batch_for_placeholder_order_
     )
 
     assert any("降批" in message for message in logs)
+    assert result.split_batch_fallback_count == 1
     assert any(len(call) > 1 for call in client.calls)
     assert any(len(call) == 1 for call in client.calls)
     assert "| Name | Description |" in result.final_markdown_text

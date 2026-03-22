@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Callable
 
-from doc_translation_tool.llm import BaseLLMClient, LLMClientError, TranslationItem
+from doc_translation_tool.llm import (
+    BaseLLMClient,
+    LLMClientError,
+    TranslationItem,
+    TranslationResult,
+)
 from doc_translation_tool.markdown import MarkdownRebuilder, SegmentedMarkdownDocument
 
 
@@ -22,6 +27,10 @@ class BatchTranslationResult:
     total_batches: int
     successful_batches: int
     retry_attempts: int = 0
+    reused_cached_segments: int = 0
+    rate_limit_backoff_count: int = 0
+    split_batch_fallback_count: int = 0
+    single_segment_placeholder_fallback_count: int = 0
     batch_errors: list[str] = field(default_factory=list)
 
 
@@ -71,6 +80,9 @@ class TranslationTaskService:
             raise ValueError("max_retries must be zero or greater.")
         self._metrics_lock = threading.Lock()
         self._retry_attempts = 0
+        self._rate_limit_backoff_count = 0
+        self._split_batch_fallback_count = 0
+        self._single_segment_placeholder_fallback_count = 0
 
     def translate_segmented_document(
         self,
@@ -98,6 +110,10 @@ class TranslationTaskService:
         successful_batches = 0
         batch_errors: list[str] = []
         self._retry_attempts = 0
+        self._rate_limit_backoff_count = 0
+        self._split_batch_fallback_count = 0
+        self._single_segment_placeholder_fallback_count = 0
+        reused_cached_segments = len(translated_segment_texts)
 
         if existing_translations and on_log is not None and translated_segment_texts:
             on_log(
@@ -124,6 +140,10 @@ class TranslationTaskService:
                 total_batches=0,
                 successful_batches=0,
                 retry_attempts=0,
+                reused_cached_segments=reused_cached_segments,
+                rate_limit_backoff_count=0,
+                split_batch_fallback_count=0,
+                single_segment_placeholder_fallback_count=0,
                 batch_errors=[],
             )
 
@@ -144,6 +164,10 @@ class TranslationTaskService:
                 total_batches=0,
                 successful_batches=0,
                 retry_attempts=0,
+                reused_cached_segments=reused_cached_segments,
+                rate_limit_backoff_count=0,
+                split_batch_fallback_count=0,
+                single_segment_placeholder_fallback_count=0,
                 batch_errors=[],
             )
 
@@ -193,6 +217,10 @@ class TranslationTaskService:
             total_batches=total_batches,
             successful_batches=successful_batches,
             retry_attempts=self._retry_attempts,
+            reused_cached_segments=reused_cached_segments,
+            rate_limit_backoff_count=self._rate_limit_backoff_count,
+            split_batch_fallback_count=self._split_batch_fallback_count,
+            single_segment_placeholder_fallback_count=self._single_segment_placeholder_fallback_count,
             batch_errors=batch_errors,
         )
 
@@ -379,6 +407,7 @@ class TranslationTaskService:
                                 f"批次 {failed_batch_labels} 将降并发重试："
                                 f"{current_parallel_batches} -> {lowered_parallel_batches}"
                             )
+                        self._record_rate_limit_backoff()
                         current_parallel_batches = lowered_parallel_batches
                         break
 
@@ -520,12 +549,24 @@ class TranslationTaskService:
                 on_log=on_log,
             )
         except LLMClientError as exc:
+            if self._should_retry_single_segment_placeholder_order_error(batch, exc):
+                self._record_single_segment_placeholder_fallback()
+                return self._translate_single_segment_with_placeholder_fallback(
+                    batch[0],
+                    direction=direction,
+                    glossary=glossary,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    on_log=on_log,
+                )
+
             if len(batch) <= 1 or not self._should_split_failed_batch(exc):
                 raise
 
             midpoint = len(batch) // 2
             left_batch = batch[:midpoint]
             right_batch = batch[midpoint:]
+            self._record_split_batch_fallback()
 
             if on_log is not None:
                 on_log(
@@ -558,6 +599,85 @@ class TranslationTaskService:
                 on_log=on_log,
             )
             return [*left_results, *right_results]
+
+    def _should_retry_single_segment_placeholder_order_error(
+        self,
+        batch,
+        error: LLMClientError,
+    ) -> bool:
+        if len(batch) != 1:
+            return False
+
+        if (
+            "Translated text changed protected placeholder tokens or their order."
+            not in str(error)
+        ):
+            return False
+
+        return len(self._PLACEHOLDER_RE.findall(batch[0].text)) >= 2
+
+    def _translate_single_segment_with_placeholder_fallback(
+        self,
+        segment,
+        *,
+        direction: str,
+        glossary: list[dict[str, str]] | None,
+        batch_index: int,
+        total_batches: int,
+        on_log: Callable[[str], None] | None,
+    ):
+        chunk_items = self._split_single_segment_by_placeholders(segment)
+
+        if len(chunk_items) <= 1:
+            raise LLMClientError(
+                "Single-segment placeholder fallback could not split the segment."
+            )
+
+        if on_log is not None:
+            on_log(
+                f"[降级] 批次 {batch_index}/{total_batches} 中的单片段 {segment.id} "
+                f"因占位符顺序错误，拆成 {len(chunk_items)} 个保序子片段重试。"
+            )
+
+        chunk_results = self._translate_batch_with_fallback(
+            chunk_items,
+            direction=direction,
+            glossary=glossary,
+            batch_index=batch_index,
+            total_batches=total_batches,
+            on_log=on_log,
+        )
+        merged_text = "".join(item.translated_text for item in chunk_results)
+        merged_results = [
+            TranslationResult(id=segment.id, translated_text=merged_text)
+        ]
+        self._validate_translated_batch(
+            [segment],
+            merged_results,
+            direction=direction,
+        )
+        return merged_results
+
+    def _split_single_segment_by_placeholders(self, segment) -> list[TranslationItem]:
+        matches = list(self._PLACEHOLDER_RE.finditer(segment.text))
+        if len(matches) < 2:
+            return [TranslationItem(id=segment.id, text=segment.text)]
+
+        chunk_texts: list[str] = [segment.text[: matches[0].end()]]
+        for index in range(1, len(matches) - 1):
+            chunk_texts.append(
+                segment.text[matches[index - 1].end() : matches[index].end()]
+            )
+        chunk_texts.append(segment.text[matches[-2].end() :])
+
+        return [
+            TranslationItem(
+                id=f"{segment.id}__phchunk_{index:02d}",
+                text=chunk_text,
+            )
+            for index, chunk_text in enumerate(chunk_texts)
+            if chunk_text
+        ]
 
     def _should_split_failed_batch(self, error: LLMClientError) -> bool:
         message = str(error)
@@ -631,6 +751,18 @@ class TranslationTaskService:
     def _record_retry_attempt(self) -> None:
         with self._metrics_lock:
             self._retry_attempts += 1
+
+    def _record_rate_limit_backoff(self) -> None:
+        with self._metrics_lock:
+            self._rate_limit_backoff_count += 1
+
+    def _record_split_batch_fallback(self) -> None:
+        with self._metrics_lock:
+            self._split_batch_fallback_count += 1
+
+    def _record_single_segment_placeholder_fallback(self) -> None:
+        with self._metrics_lock:
+            self._single_segment_placeholder_fallback_count += 1
 
     def _is_rate_limit_error(self, error: LLMClientError) -> bool:
         message = str(error).upper()

@@ -4,6 +4,20 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+Improved:
+
+- Added a single-segment placeholder-order rescue path: when a lone segment fails validation because protected placeholders were reordered, the tool retries that segment as smaller placeholder-bound chunks before giving up
+- Added translation summary counters for cached-segment reuse, `429` concurrency backoff events, split-batch fallback events, and single-segment placeholder rescue events to improve large-document observability
+
+Fixed:
+
+- Reduced hard failures on complex Markdown documents where a single placeholder-heavy segment would previously fail the whole run after repeated placeholder-order validation errors
+
+Docs:
+
+- Simplified the Chinese user guide and Chinese repository intro so first-time users can get started with fewer configuration mistakes
+- Added clearer Anthropic-compatible configuration examples and highlighted that `DOC_TRANS_BASE_URL` should usually be the service root rather than a manually appended `/messages` endpoint
+
 ## v0.4.2 - 2026-03-22
 
 Improved:

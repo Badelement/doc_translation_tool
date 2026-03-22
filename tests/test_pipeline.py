@@ -101,6 +101,10 @@ def test_pipeline_executes_full_flow_and_writes_output(tmp_path: Path) -> None:
     assert result.connection_message == "OK"
     assert result.total_segments == 1
     assert result.retry_attempts == 0
+    assert result.reused_cached_segments == 0
+    assert result.rate_limit_backoff_count == 0
+    assert result.split_batch_fallback_count == 0
+    assert result.single_segment_placeholder_fallback_count == 0
     assert result.overall_elapsed_seconds >= 0
     assert progress_events[0][1] == 0
     assert ("翻译中：已完成批次 0/1", 45) in progress_events
@@ -109,6 +113,7 @@ def test_pipeline_executes_full_flow_and_writes_output(tmp_path: Path) -> None:
     assert ("正在写入输出文件", 97) in progress_events
     assert progress_events[-1] == ("翻译完成", 100)
     assert any("片段总数" in message for message in logs)
+    assert any("[stats]" in message for message in logs)
     assert client.glossary_calls == [[]]
     assert client.closed is True
 
