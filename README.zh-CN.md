@@ -4,7 +4,7 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-当前发布版本：`0.4.3`
+当前发布版本：[v0.4.3](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.3)
 
 ## 项目简介
 
