@@ -4,9 +4,9 @@ Desktop tool for translating a single Markdown or DITA document between Chinese 
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Current release: [v0.4.3](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.3)
+Current release: [v0.4.4](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.4)
 
-Latest repository changes after `v0.4.3` are recorded under the `Unreleased` section in [CHANGELOG.md](./CHANGELOG.md).
+New in-progress repository changes are recorded under the `Unreleased` section in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Overview
 
@@ -143,7 +143,7 @@ UI status notes:
 - Packaging metadata reads the version dynamically from code
 - Release notes are recorded in `CHANGELOG.md`
 - Unreleased local improvements should be recorded under the `Unreleased` section before the next tag is created
-- The repository may contain newer unreleased improvements even when the latest GitHub Release tag is still `v0.4.3`
+- New work that lands after `v0.4.4` should be recorded under `Unreleased` until the next tag is created
 
 When preparing a new release:
 

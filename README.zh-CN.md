@@ -4,9 +4,9 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-当前发布版本：[v0.4.3](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.3)
+当前发布版本：[v0.4.4](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.4)
 
-`v0.4.3` 之后、尚未重新打标签发布的仓库改动，会记录在 [CHANGELOG.md](./CHANGELOG.md) 的 `Unreleased` 小节里。
+后续尚未重新打标签发布的仓库改动，会记录在 [CHANGELOG.md](./CHANGELOG.md) 的 `Unreleased` 小节里。
 
 ## 项目简介
 
@@ -162,4 +162,4 @@ DOC_TRANS_MODEL=your_model_name
 - 运行时版本来自 `doc_translation_tool.__version__`
 - 打包元数据会动态读取版本号
 - 每次正式发版都会记录到 `CHANGELOG.md`
-- 仓库主分支里可能已经包含比最新 Release 更新的改动，这些内容会先记录在 `Unreleased`
+- `v0.4.4` 之后的新改动会先记录在 `Unreleased`，等下一个正式版本再收口

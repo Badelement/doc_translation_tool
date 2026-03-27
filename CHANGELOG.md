@@ -4,6 +4,10 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.4.4 - 2026-03-27
+
 Added:
 
 - Added single-file `.dita` translation support through the main desktop flow alongside existing Markdown support
