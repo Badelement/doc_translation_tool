@@ -6,6 +6,8 @@
 
 当前发布版本：[v0.4.3](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.3)
 
+`v0.4.3` 之后、尚未重新打标签发布的仓库改动，会记录在 [CHANGELOG.md](./CHANGELOG.md) 的 `Unreleased` 小节里。
+
 ## 项目简介
 
 这个工具主要解决的是“把一个 Markdown 或 DITA 技术文档稳一点地翻译出来”。
@@ -18,12 +20,15 @@
 - 支持 OpenAI 兼容接口和 Anthropic 兼容接口
 - 处理大文档时，可以按批次并行翻译
 - GUI 会显示配置状态、接口检查状态和批次进度
+- GUI 里可以直接维护模型配置和术语表
 
 ## 当前已实现
 
 - 单文件 Markdown / DITA 翻译
 - 自动识别常见中英文内容并推荐翻译方向
 - 可配置的批次大小和并发批次数
+- 可以在 GUI 里直接编辑模型配置并写回 `.env`
+- 可以在 GUI 里直接编辑 `glossary.json`
 - 启动时先检查关键配置是否齐全
 - 开始翻译时再检查接口连通性
 - 按批次显示进度和完成情况
@@ -35,8 +40,9 @@
 
 1. 解压整个 `DocTranslationTool-v版本号-win64.zip`
 2. 打开 `dist\DocTranslationTool\`
-3. 编辑 `DocTranslationTool.exe` 同目录下的 `.env`
-4. 先只填这 3 项：
+3. 启动 `DocTranslationTool.exe`
+4. 可以直接编辑同目录下的 `.env`，也可以点界面里的“模型配置”
+5. 先只填这 3 项：
 
 ```env
 DOC_TRANS_BASE_URL=你的接口地址
@@ -44,11 +50,11 @@ DOC_TRANS_API_KEY=你的API Key
 DOC_TRANS_MODEL=你要用的模型名
 ```
 
-5. 启动 `DocTranslationTool.exe`
 6. 先看左下角“模型状态”
-7. 选择 `.md` 或 `.dita` 文件和输出目录
-8. 如有需要，再调整翻译方向
-9. 点击“开始翻译”
+7. 如有术语需求，可以再点“术语配置”维护 `glossary.json`
+8. 选择 `.md` 或 `.dita` 文件和输出目录
+9. 如有需要，再调整翻译方向
+10. 点击“开始翻译”
 
 大多数用户第一次使用，不需要改别的配置。
 
@@ -61,7 +67,7 @@ DOC_TRANS_MODEL=你要用的模型名
 
 1. 运行 `bash ./scripts/build_macos.sh`
 2. 打开 `dist-macos/DocTranslationTool-macos-<arch>/`
-3. 编辑和 `DocTranslationTool.app` 同目录下的 `.env`
+3. 编辑和 `DocTranslationTool.app` 同目录下的 `.env`，或者启动后用“模型配置”按钮修改
 4. 启动 `DocTranslationTool.app`
 
 macOS 打包版会从 `.app` 所在目录读取 `.env`、`settings.json` 和 `glossary.json`。
@@ -93,6 +99,10 @@ DOC_TRANS_MODEL=your_model_name
   配置已经读到，但还没真正请求接口
 - `模型状态：正在检查接口连通性`
   程序正在验证接口是否可用
+- `模型配置`
+  可以直接在 GUI 里修改 `.env`，也可以先测试连通性再保存
+- `术语配置`
+  可以直接维护 `glossary.json`，保存后后续翻译任务会自动加载
 - `翻译中：正在处理第 x/N 批`
   当前有批次在执行
 - `翻译中：已完成批次 x/N`
@@ -120,8 +130,13 @@ DOC_TRANS_MODEL=your_model_name
 - `DOC_TRANS_MODEL`
 - `DOC_TRANS_BATCH_SIZE`
 - `DOC_TRANS_PARALLEL_BATCHES`
+- `DOC_TRANS_MAX_RETRIES`
+- `DOC_TRANS_TEMPERATURE`
+- `DOC_TRANS_MAX_TOKENS`
 
 如果你是第一次使用，先只改前 3 个就够了。
+
+如果你不想手改文件，也可以直接用 GUI 里的“模型配置”按钮去改这些常用项。
 
 本地 macOS 打包版同样遵循这个配置优先级，只是运行时根目录是 `DocTranslationTool.app` 所在目录，而不是 `.app` 包内部。
 
@@ -147,3 +162,4 @@ DOC_TRANS_MODEL=your_model_name
 - 运行时版本来自 `doc_translation_tool.__version__`
 - 打包元数据会动态读取版本号
 - 每次正式发版都会记录到 `CHANGELOG.md`
+- 仓库主分支里可能已经包含比最新 Release 更新的改动，这些内容会先记录在 `Unreleased`

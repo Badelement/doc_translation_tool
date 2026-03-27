@@ -89,6 +89,7 @@ Recommended companion files:
 - `使用指南.md`
 - `CHANGELOG.md`
 - `PACKAGING.md`
+- `.env.example`
 - `settings.example.json`
 - `glossary.example.json`
 
@@ -116,6 +117,12 @@ Priority:
 3. `settings.json`
 4. Code defaults
 
+End-user configuration path:
+
+- Most users can configure the packaged app from the GUI `模型配置` dialog after launch
+- `glossary.json` can also be maintained from the GUI `术语配置` dialog
+- Keep `.env.example`, `settings.example.json`, and `glossary.example.json` next to the packaged app as editable templates / references
+
 ## Release Checklist
 
 Before publishing a package, check these items:
@@ -125,8 +132,9 @@ Before publishing a package, check these items:
 3. `.env` is the intended release config
 4. `使用指南.md` is present
 5. `CHANGELOG.md` is present
-6. The release folder does not contain test output or demo output
-7. The zip can be extracted and run as a full folder
+6. `.env.example`, `settings.example.json`, and `glossary.example.json` are present if the package is meant for handoff to other users
+7. The release folder does not contain test output or demo output
+8. The zip can be extracted and run as a full folder
 
 ## Notes
 

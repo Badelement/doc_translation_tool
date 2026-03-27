@@ -6,6 +6,8 @@ Desktop tool for translating a single Markdown or DITA document between Chinese 
 
 Current release: [v0.4.3](https://github.com/Badelement/doc_translation_tool/releases/tag/v0.4.3)
 
+Latest repository changes after `v0.4.3` are recorded under the `Unreleased` section in [CHANGELOG.md](./CHANGELOG.md).
+
 ## Overview
 
 This project focuses on a practical internal workflow:
@@ -16,6 +18,7 @@ This project focuses on a practical internal workflow:
 - Support OpenAI-compatible and Anthropic-compatible API formats
 - Support batch parallel translation for better large-document throughput
 - Provide clearer GUI feedback for model configuration, connectivity, and batch progress
+- Provide in-app dialogs for model settings and glossary editing
 
 ## What It Does
 
@@ -24,6 +27,8 @@ This project focuses on a practical internal workflow:
 - Auto-detect common Chinese or English source files and switch the translation direction accordingly
 - Support both OpenAI-compatible and Anthropic-compatible API formats
 - Support configurable batch-level parallel translation
+- Edit model settings from the GUI and save them back into `.env`
+- Edit `glossary.json` from the GUI and keep product names / terminology stable more easily
 - Show startup model-config status before a translation run begins
 - Show translation progress with batch-based running and completion states
 - Preserve Markdown structure, protected placeholders, tables and front matter rules
@@ -39,15 +44,16 @@ For packaged Windows use:
 
 1. Extract the full `DocTranslationTool-v<version>-win64.zip`
 2. Open the `dist\DocTranslationTool\` folder
-3. Edit `.env` in the same folder as `DocTranslationTool.exe`
-4. Fill in your own `DOC_TRANS_BASE_URL`, `DOC_TRANS_API_KEY`, and `DOC_TRANS_MODEL`
-5. Launch `DocTranslationTool.exe`
+3. Launch `DocTranslationTool.exe`
+4. Either edit `.env` in the same folder or click `模型配置` in the app
+5. Fill in your own `DOC_TRANS_BASE_URL`, `DOC_TRANS_API_KEY`, and `DOC_TRANS_MODEL`
 6. Check the bottom-left model status first:
    `配置不完整` means the key fields are missing,
    `配置已加载，待检查连通性` means the config is present and the real API check will happen when translation starts
-7. Select a `.md` or `.dita` file and an output directory
-8. The tool may auto-switch the direction when it confidently detects Chinese or English source content
-9. Start translation and watch the batch-based progress updates
+7. Optionally click `术语配置` to maintain `glossary.json` inside the GUI
+8. Select a `.md` or `.dita` file and an output directory
+9. The tool may auto-switch the direction when it confidently detects Chinese or English source content
+10. Start translation and watch the batch-based progress updates
 
 Most users do not need to edit any other config fields.
 
@@ -55,7 +61,7 @@ For local macOS packaging:
 
 1. Run `bash ./scripts/build_macos.sh`
 2. Open `dist-macos/DocTranslationTool-macos-<arch>/`
-3. Edit `.env` in the same directory as `DocTranslationTool.app`
+3. Edit `.env` in the same directory as `DocTranslationTool.app`, or use the in-app `模型配置` dialog after launch
 4. Launch `DocTranslationTool.app`
 
 The packaged macOS app reads `.env`, `settings.json`, and `glossary.json` from the directory that contains the `.app` bundle.
@@ -101,6 +107,8 @@ Recommended setup for end users:
 
 - Use `.env` as the main config file
 - Treat `settings.json` as optional advanced config
+- Use the GUI `模型配置` dialog for everyday edits when you do not want to open config files manually
+- Use `glossary.json` or the GUI `术语配置` dialog for terminology pairs that should stay stable
 - Do not commit real API keys or internal URLs into version control
 
 Useful LLM tuning fields:
@@ -108,11 +116,15 @@ Useful LLM tuning fields:
 - `batch_size`: number of segments sent in one request
 - `parallel_batches`: number of batch requests allowed to run at the same time
 - `max_retries`: retry count for a failed batch before surfacing an error
+- `temperature`: output creativity / variance control
+- `max_tokens`: optional explicit output cap for providers that require one
+- `timeout`, `connect_timeout`, `read_timeout`: request-level timeout controls
 
 UI status notes:
 
 - Startup only validates whether key config fields are present; it does not send a network request yet
 - Real connectivity is checked when translation starts
+- The `模型配置` dialog can also run a connectivity test before you save
 - Translation progress now reports both `正在处理第 x/N 批` and `已完成批次 x/N`
 - Windows release zip names now include the app version, and the packaged `DocTranslationTool.exe` also carries Windows file version metadata
 - Local macOS packages read runtime config from the directory that contains `DocTranslationTool.app`
@@ -131,6 +143,7 @@ UI status notes:
 - Packaging metadata reads the version dynamically from code
 - Release notes are recorded in `CHANGELOG.md`
 - Unreleased local improvements should be recorded under the `Unreleased` section before the next tag is created
+- The repository may contain newer unreleased improvements even when the latest GitHub Release tag is still `v0.4.3`
 
 When preparing a new release:
 
