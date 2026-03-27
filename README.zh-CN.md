@@ -1,6 +1,6 @@
 # 文档翻译工具
 
-用于翻译单个 Markdown 文档的桌面工具。重点是尽量保留 Markdown 结构，并让中英文技术文档的双向翻译更稳一些。
+用于翻译单个 Markdown 或 DITA 文档的桌面工具。重点是尽量保留文档结构，并让中英文技术文档的双向翻译更稳一些。
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
@@ -8,20 +8,20 @@
 
 ## 项目简介
 
-这个工具主要解决的是“把一个 Markdown 技术文档稳一点地翻译出来”。
+这个工具主要解决的是“把一个 Markdown 或 DITA 技术文档稳一点地翻译出来”。
 
 它适合这些场景：
 
-- 一次翻译一个 `.md` 文件
+- 一次翻译一个 `.md` 或 `.dita` 文件
 - 支持 `中译英` 和 `英译中`
-- 尽量保留 Markdown 结构、表格、占位符和 front matter
+- 尽量保留 Markdown 结构、表格、占位符、front matter，以及 DITA 的 XML 文本节点结构
 - 支持 OpenAI 兼容接口和 Anthropic 兼容接口
 - 处理大文档时，可以按批次并行翻译
 - GUI 会显示配置状态、接口检查状态和批次进度
 
 ## 当前已实现
 
-- 单文件 Markdown 翻译
+- 单文件 Markdown / DITA 翻译
 - 自动识别常见中英文内容并推荐翻译方向
 - 可配置的批次大小和并发批次数
 - 启动时先检查关键配置是否齐全
@@ -33,7 +33,7 @@
 
 如果你使用的是 Windows 打包版，最快这样开始：
 
-1. 解压整个 `DocTranslationTool-win64.zip`
+1. 解压整个 `DocTranslationTool-v版本号-win64.zip`
 2. 打开 `dist\DocTranslationTool\`
 3. 编辑 `DocTranslationTool.exe` 同目录下的 `.env`
 4. 先只填这 3 项：
@@ -46,11 +46,25 @@ DOC_TRANS_MODEL=你要用的模型名
 
 5. 启动 `DocTranslationTool.exe`
 6. 先看左下角“模型状态”
-7. 选择 `.md` 文件和输出目录
+7. 选择 `.md` 或 `.dita` 文件和输出目录
 8. 如有需要，再调整翻译方向
 9. 点击“开始翻译”
 
 大多数用户第一次使用，不需要改别的配置。
+
+补充：
+
+- 发布 zip 文件名会带版本号
+- Windows 下 `DocTranslationTool.exe` 的文件属性里也会写入版本号
+
+如果你在 macOS 本地打包运行：
+
+1. 运行 `bash ./scripts/build_macos.sh`
+2. 打开 `dist-macos/DocTranslationTool-macos-<arch>/`
+3. 编辑和 `DocTranslationTool.app` 同目录下的 `.env`
+4. 启动 `DocTranslationTool.app`
+
+macOS 打包版会从 `.app` 所在目录读取 `.env`、`settings.json` 和 `glossary.json`。
 
 ## Anthropic 兼容接口怎么填
 
@@ -109,11 +123,23 @@ DOC_TRANS_MODEL=your_model_name
 
 如果你是第一次使用，先只改前 3 个就够了。
 
+本地 macOS 打包版同样遵循这个配置优先级，只是运行时根目录是 `DocTranslationTool.app` 所在目录，而不是 `.app` 包内部。
+
+## DITA 支持范围
+
+当前版本已支持 `.dita` 文件的基础翻译流程，适合常见 topic/task 类内容：
+
+- 会抽取可翻译的 XML 文本节点进行翻译
+- 会尽量保留代码类标签、路径、文件名和技术常量
+- 输出文件会继续保持 `.dita` 后缀
+
+目前 README 里说的复杂文档稳定性优化，主要还是围绕 Markdown 打磨得更充分；DITA 支持已经接入主流程，但后续还可以继续扩展更复杂的标签和内容类型覆盖。
+
 ## 相关文档
 
 - [README.md](./README.md)：英文首页说明
 - [使用指南.md](./使用指南.md)：更完整、更偏实操的中文指南
-- [PACKAGING.md](./PACKAGING.md)：Windows 打包说明
+- [PACKAGING.md](./PACKAGING.md)：桌面打包说明
 - [CHANGELOG.md](./CHANGELOG.md)：版本更新记录
 
 ## 版本说明

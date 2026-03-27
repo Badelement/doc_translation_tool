@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from doc_translation_tool.services.lang_detect import (
+    detect_language_for_document,
     detect_language_from_file,
     detect_language_from_text,
     language_matches_direction,
@@ -47,6 +48,42 @@ def test_detect_language_from_file_reads_markdown_file(tmp_path: Path) -> None:
     result = detect_language_from_file(source_file)
 
     assert result.language == "en"
+
+
+def test_detect_language_from_text_ignores_xml_tags_for_dita_content() -> None:
+    text = (
+        "<topic id='demo'>"
+        "<title>相机驱动指南</title>"
+        "<body><p>本文档用于说明启动流程。</p></body>"
+        "</topic>"
+    )
+
+    result = detect_language_from_text(text)
+
+    assert result.language == "zh"
+
+
+def test_detect_language_for_document_uses_dita_translatable_text_only(
+    tmp_path: Path,
+) -> None:
+    source_file = tmp_path / "topic.dita"
+    source_file.write_text(
+        (
+            "<topic id='demo'>"
+            "<title>启动说明</title>"
+            "<body>"
+            "<p>本文档用于说明启动流程。</p>"
+            "<codeblock>This code block contains many English words and driver configuration details.</codeblock>"
+            "<screen>CONFIG_DRIVER_BOOT=1</screen>"
+            "</body>"
+            "</topic>\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = detect_language_for_document(source_file)
+
+    assert result.language == "zh"
 
 
 def test_language_matches_direction() -> None:

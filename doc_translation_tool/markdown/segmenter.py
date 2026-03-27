@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 
+from doc_translation_tool.documents.base import (
+    DocumentSegment,
+    PreparedDocument,
+    PreparedDocumentBlock,
+)
 from doc_translation_tool.markdown.protector import (
     ProtectedMarkdownBlock,
     ProtectedMarkdownDocument,
@@ -11,36 +16,24 @@ from doc_translation_tool.markdown.protector import (
 
 
 @dataclass(slots=True)
-class TranslationSegment:
+class TranslationSegment(DocumentSegment):
     """Single translatable segment generated from a protected Markdown block."""
 
-    id: str
-    block_index: int
-    block_type: str
-    order_in_block: int
-    text: str
-
 
 @dataclass(slots=True)
-class SegmentedMarkdownBlock:
+class SegmentedMarkdownBlock(PreparedDocumentBlock):
     """Protected block plus the translation segment IDs derived from it."""
 
-    block_index: int
-    block_type: str
-    protected_text: str
     placeholders: list[ProtectedPlaceholder] = field(default_factory=list)
-    segment_ids: list[str] = field(default_factory=list)
-    translatable: bool = True
-    meta: dict[str, str | int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
-class SegmentedMarkdownDocument:
+class SegmentedMarkdownDocument(PreparedDocument):
     """Segmented representation ready for batch translation."""
 
     blocks: list[SegmentedMarkdownBlock]
     segments: list[TranslationSegment]
-    trailing_newline: bool = False
+    document_type: str = "markdown"
 
 
 class MarkdownSegmenter:
@@ -89,6 +82,7 @@ class MarkdownSegmenter:
             blocks=blocks,
             segments=segments,
             trailing_newline=document.trailing_newline,
+            document_type="markdown",
         )
 
     def rebuild_protected_block_texts(

@@ -56,7 +56,7 @@ def test_write_output_keeps_source_file_unchanged_when_using_source_directory(
     assert Path(result.output_path) == tmp_path / "demo_en.md"
 
 
-def test_write_output_rejects_existing_output_file(tmp_path: Path) -> None:
+def test_write_output_overwrites_existing_output_file(tmp_path: Path) -> None:
     source_file = tmp_path / "guide.md"
     source_file.write_text("# 原文\n", encoding="utf-8")
     existing_output = tmp_path / "guide_en.md"
@@ -64,13 +64,15 @@ def test_write_output_rejects_existing_output_file(tmp_path: Path) -> None:
 
     writer = MarkdownOutputWriter()
 
-    with pytest.raises(OutputWriteError, match="already exists"):
-        writer.write_output(
-            source_path=source_file,
-            output_dir=tmp_path,
-            direction="zh_to_en",
-            markdown_text="new\n",
-        )
+    result = writer.write_output(
+        source_path=source_file,
+        output_dir=tmp_path,
+        direction="zh_to_en",
+        markdown_text="new\n",
+    )
+
+    assert existing_output.read_text(encoding="utf-8") == "new\n"
+    assert Path(result.output_path) == existing_output
 
 
 def test_write_output_rejects_unknown_direction(tmp_path: Path) -> None:

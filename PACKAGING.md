@@ -1,14 +1,34 @@
-# Windows Packaging
+# Desktop Packaging
 
 ## Purpose
 
-This document describes how to build and verify the Windows package.
+This document describes how to build and verify the desktop packages for Windows and macOS.
 
 ## Build Command
 
 Run from the project root:
 
+Windows:
+
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
+
+macOS:
+
+```bash
+bash ./scripts/build_macos.sh
+```
+
+Default behavior:
+
+- The packaged `.env` is copied from `.env.example`
+- This avoids shipping a real API key by accident
+
+If you intentionally need an internal build that includes the real local `.env`, run:
+
+```powershell
+$env:DOC_TRANS_PACKAGE_REAL_ENV=1
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 ```
 
@@ -29,15 +49,38 @@ dist\DocTranslationTool\DocTranslationTool.exe
 Zip release:
 
 ```text
-dist\DocTranslationTool-win64.zip
+dist\DocTranslationTool-v<version>-win64.zip
+```
+
+macOS folder release:
+
+```text
+dist-macos/DocTranslationTool-macos-<arch>/
+```
+
+macOS app bundle:
+
+```text
+dist-macos/DocTranslationTool-macos-<arch>/DocTranslationTool.app
+```
+
+macOS zip release:
+
+```text
+dist-macos/DocTranslationTool-v<version>-macos-<arch>.zip
 ```
 
 ## Files Expected In Release Folder
 
-Required runtime files:
+Windows required runtime files:
 
 - `DocTranslationTool.exe`
 - `_internal\`
+- `.env`
+
+macOS required runtime files:
+
+- `DocTranslationTool.app`
 - `.env`
 
 Recommended companion files:
@@ -51,9 +94,16 @@ Recommended companion files:
 
 ## Runtime Config Rules
 
-The packaged app reads runtime config from the same directory as the exe.
+Windows packaged app:
 
-Supported runtime files next to `DocTranslationTool.exe`:
+- Reads runtime config from the same directory as `DocTranslationTool.exe`
+
+macOS packaged app:
+
+- Reads runtime config from the same directory that contains `DocTranslationTool.app`
+- This keeps `.env`, `settings.json`, and `glossary.json` outside the `.app` bundle so end users do not need to edit files inside `Contents/`
+
+Supported runtime files:
 
 - `.env`
 - `settings.json`
@@ -70,16 +120,18 @@ Priority:
 
 Before publishing a package, check these items:
 
-1. `DocTranslationTool.exe` can launch normally
-2. `.env` is the intended release config
-3. `使用指南.md` is present
-4. `CHANGELOG.md` is present
-5. The release folder does not contain test output or demo output
-6. The zip can be extracted and run as a full folder
+1. The packaged app can launch normally on the target platform
+2. On Windows, `DocTranslationTool.exe` file properties show the expected `File version` / `Product version`
+3. `.env` is the intended release config
+4. `使用指南.md` is present
+5. `CHANGELOG.md` is present
+6. The release folder does not contain test output or demo output
+7. The zip can be extracted and run as a full folder
 
 ## Notes
 
-- Do not send the `exe` alone.
-- Send either the whole `dist\DocTranslationTool\` folder or the zip.
+- Do not send the Windows `exe` alone.
+- Do not send the macOS `.app` alone if the release expects companion config and docs next to it.
+- Send either the whole packaged folder or the zip for the target platform.
 - If the package is for internal company use, real internal API config may be kept in `.env` if that matches your release policy.
 - If the package is for wider distribution, replace sensitive config before shipping.

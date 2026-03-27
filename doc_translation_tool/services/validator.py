@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from doc_translation_tool.document_types import (
+    is_supported_document,
+    supported_source_error_message,
+)
+
 
 @dataclass(slots=True)
 class InputValidationResult:
@@ -35,8 +40,8 @@ def validate_translation_inputs(
             errors.append("目标翻译文件不存在")
         elif not source_path.is_file():
             errors.append("目标翻译文件必须为文件")
-        elif source_path.suffix.lower() != ".md":
-            errors.append("目标翻译文件必须为 .md 格式")
+        elif not is_supported_document(source_path):
+            errors.append(supported_source_error_message())
 
     if output_path is None and source_path is not None and source_path.is_file():
         output_path = source_path.parent

@@ -394,3 +394,43 @@ def test_protect_front_matter_multiline_field_only_exposes_allowed_body_content(
         "  保持原样\n"
         "---\n"
     )
+
+
+def test_protect_front_matter_multiline_field_accepts_tab_indented_body_lines() -> None:
+    text = (
+        "---\n"
+        "desc: |\n"
+        "\t\tCreate source document.   \n"
+        "author: 张三\n"
+        "---\n"
+    )
+
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    document = parser.parse(text)
+    protected = protector.protect(document)
+    block = protected.blocks[0]
+
+    assert block.block_type == "front_matter"
+    assert block.translatable is True
+    assert "Create source document.   " in block.protected_text
+    assert "@@PROTECT_0001@@" in block.protected_text
+    assert "author: 张三" not in block.protected_text
+
+    translated_texts = [
+        "---\n"
+        "@@PROTECT_0000@@\n"
+        "@@PROTECT_0001@@Create translated document.   \n"
+        "@@PROTECT_0002@@\n"
+        "---"
+    ]
+
+    restored = protector.restore_document(protected, translated_texts)
+
+    assert restored == (
+        "---\n"
+        "desc: |\n"
+        "\t\tCreate translated document.   \n"
+        "author: 张三\n"
+        "---\n"
+    )

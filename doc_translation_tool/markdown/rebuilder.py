@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from doc_translation_tool.markdown.segmenter import SegmentedMarkdownDocument
+from doc_translation_tool.documents.base import PreparedDocument
 
 
 class MarkdownRebuilder:
@@ -8,7 +8,7 @@ class MarkdownRebuilder:
 
     def rebuild_protected_block_texts(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
         translated_segment_texts: dict[str, str] | None = None,
     ) -> list[str]:
         segment_map = {
@@ -32,7 +32,7 @@ class MarkdownRebuilder:
 
     def rebuild_document(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
         translated_segment_texts: dict[str, str] | None = None,
     ) -> str:
         restored_blocks: list[str] = []

@@ -7,6 +7,8 @@ from PySide6.QtCore import QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QLineEdit, QWidget
 
+from doc_translation_tool.document_types import is_supported_document
+
 
 class PathLineEdit(QLineEdit):
     """QLineEdit that accepts local file-system drag and drop."""
@@ -59,8 +61,8 @@ class PathLineEdit(QLineEdit):
 
     @staticmethod
     def _matches_path_kind(path: Path, path_kind: str) -> bool:
-        if path_kind == "markdown_file":
-            return path.is_file() and path.suffix.lower() == ".md"
+        if path_kind in {"document_file", "markdown_file"}:
+            return path.is_file() and is_supported_document(path)
         if path_kind == "directory":
             return path.is_dir()
         raise ValueError(f"Unsupported path kind: {path_kind}")

@@ -218,9 +218,7 @@ class MarkdownProtector:
                             placeholders.append(blank_placeholder)
                             protected_lines.append(blank_placeholder.token)
                         else:
-                            indent_length = len(body_line) - len(body_line.lstrip(" "))
-                            indent = body_line[:indent_length]
-                            content = body_line[indent_length:]
+                            indent, content = self._split_leading_indentation(body_line)
                             indent_placeholder = self._create_placeholder(
                                 indent,
                                 "front_matter_indent",
@@ -323,8 +321,15 @@ class MarkdownProtector:
     def _is_front_matter_block_value_line(self, line: str, key_indent: int) -> bool:
         if line.strip() == "":
             return True
+        if line.startswith("\t"):
+            return True
         indent_length = len(line) - len(line.lstrip(" "))
         return indent_length > key_indent
+
+    def _split_leading_indentation(self, line: str) -> tuple[str, str]:
+        stripped = line.lstrip(" \t")
+        indent_length = len(line) - len(stripped)
+        return line[:indent_length], stripped
 
     def _protect_table_row(
         self,

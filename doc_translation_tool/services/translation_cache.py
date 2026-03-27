@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from doc_translation_tool.markdown import SegmentedMarkdownDocument
+from doc_translation_tool.documents import PreparedDocument
 
 
 @dataclass(slots=True)
@@ -34,9 +34,10 @@ class TranslationCheckpointCache:
 
     def build_document_fingerprint(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
     ) -> str:
         payload = {
+            "document_type": document.document_type,
             "trailing_newline": document.trailing_newline,
             "segments": [
                 {

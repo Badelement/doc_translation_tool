@@ -7,13 +7,14 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Callable
 
+from doc_translation_tool.documents import PreparedDocument
 from doc_translation_tool.llm import (
     BaseLLMClient,
     LLMClientError,
     TranslationItem,
     TranslationResult,
 )
-from doc_translation_tool.markdown import MarkdownRebuilder, SegmentedMarkdownDocument
+from doc_translation_tool.markdown import MarkdownRebuilder
 
 
 @dataclass(slots=True)
@@ -56,12 +57,13 @@ class TranslationTaskService:
         self,
         client: BaseLLMClient,
         *,
+        rebuilder=None,
         batch_size: int | None = None,
         parallel_batches: int | None = None,
         max_retries: int | None = None,
     ) -> None:
         self.client = client
-        self.rebuilder = MarkdownRebuilder()
+        self.rebuilder = rebuilder or MarkdownRebuilder()
         self.batch_size = batch_size or client.settings.batch_size
         self.parallel_batches = (
             parallel_batches
@@ -84,9 +86,9 @@ class TranslationTaskService:
         self._split_batch_fallback_count = 0
         self._single_segment_placeholder_fallback_count = 0
 
-    def translate_segmented_document(
+    def translate_prepared_document(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
         *,
         direction: str,
         glossary: list[dict[str, str]] | None = None,
@@ -224,9 +226,32 @@ class TranslationTaskService:
             batch_errors=batch_errors,
         )
 
+    def translate_segmented_document(
+        self,
+        document: PreparedDocument,
+        *,
+        direction: str,
+        glossary: list[dict[str, str]] | None = None,
+        existing_translations: dict[str, str] | None = None,
+        on_batch_complete: Callable[[int, int], None] | None = None,
+        on_batch_started: Callable[[int, int, int], None] | None = None,
+        on_batch_translated: Callable[[dict[str, str]], None] | None = None,
+        on_log: Callable[[str], None] | None = None,
+    ) -> BatchTranslationResult:
+        return self.translate_prepared_document(
+            document,
+            direction=direction,
+            glossary=glossary,
+            existing_translations=existing_translations,
+            on_batch_complete=on_batch_complete,
+            on_batch_started=on_batch_started,
+            on_batch_translated=on_batch_translated,
+            on_log=on_log,
+        )
+
     def rebuild_protected_block_texts(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
         translated_segment_texts: dict[str, str],
     ) -> list[str]:
         return self.rebuilder.rebuild_protected_block_texts(
@@ -236,7 +261,7 @@ class TranslationTaskService:
 
     def rebuild_markdown_text(
         self,
-        document: SegmentedMarkdownDocument,
+        document: PreparedDocument,
         translated_segment_texts: dict[str, str],
     ) -> str:
         return self.rebuilder.rebuild_document(

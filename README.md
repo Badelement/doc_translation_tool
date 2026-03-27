@@ -1,6 +1,6 @@
 # Document Translation Tool
 
-Desktop tool for translating a single Markdown document between Chinese and English while preserving Markdown structure.
+Desktop tool for translating a single Markdown or DITA document between Chinese and English while preserving document structure.
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
@@ -10,8 +10,8 @@ Current release: [v0.4.3](https://github.com/Badelement/doc_translation_tool/rel
 
 This project focuses on a practical internal workflow:
 
-- Translate one Markdown document at a time
-- Preserve Markdown structure, placeholders, tables, and front matter rules
+- Translate one Markdown or DITA document at a time
+- Preserve Markdown structure or DITA XML text structure during translation
 - Support both Chinese-to-English and English-to-Chinese translation
 - Support OpenAI-compatible and Anthropic-compatible API formats
 - Support batch parallel translation for better large-document throughput
@@ -19,7 +19,7 @@ This project focuses on a practical internal workflow:
 
 ## What It Does
 
-- Translate one `.md` file at a time
+- Translate one `.md` or `.dita` file at a time
 - Support `zh_to_en` and `en_to_zh`
 - Auto-detect common Chinese or English source files and switch the translation direction accordingly
 - Support both OpenAI-compatible and Anthropic-compatible API formats
@@ -27,6 +27,7 @@ This project focuses on a practical internal workflow:
 - Show startup model-config status before a translation run begins
 - Show translation progress with batch-based running and completion states
 - Preserve Markdown structure, protected placeholders, tables and front matter rules
+- Preserve DITA XML text nodes while leaving code-like tags and protected literals stable
 - Protect embedded HTML/XML-style tags, common technical file names, path literals, and uppercase technical constants
 - Resume large translation runs from cached segment results after a failure
 - Reduce concurrency automatically after `429` / rate-limit errors during parallel batch translation
@@ -36,7 +37,7 @@ This project focuses on a practical internal workflow:
 
 For packaged Windows use:
 
-1. Extract the full `DocTranslationTool-win64.zip`
+1. Extract the full `DocTranslationTool-v<version>-win64.zip`
 2. Open the `dist\DocTranslationTool\` folder
 3. Edit `.env` in the same folder as `DocTranslationTool.exe`
 4. Fill in your own `DOC_TRANS_BASE_URL`, `DOC_TRANS_API_KEY`, and `DOC_TRANS_MODEL`
@@ -44,15 +45,24 @@ For packaged Windows use:
 6. Check the bottom-left model status first:
    `配置不完整` means the key fields are missing,
    `配置已加载，待检查连通性` means the config is present and the real API check will happen when translation starts
-7. Select a `.md` file and an output directory
+7. Select a `.md` or `.dita` file and an output directory
 8. The tool may auto-switch the direction when it confidently detects Chinese or English source content
 9. Start translation and watch the batch-based progress updates
 
 Most users do not need to edit any other config fields.
 
+For local macOS packaging:
+
+1. Run `bash ./scripts/build_macos.sh`
+2. Open `dist-macos/DocTranslationTool-macos-<arch>/`
+3. Edit `.env` in the same directory as `DocTranslationTool.app`
+4. Launch `DocTranslationTool.app`
+
+The packaged macOS app reads `.env`, `settings.json`, and `glossary.json` from the directory that contains the `.app` bundle.
+
 ## Complex Technical Documents
 
-The tool is now tuned more aggressively for large technical Markdown documents that contain heavy tables, paths, config snippets, and mixed technical literals.
+The tool is now tuned more aggressively for large technical Markdown documents and DITA topics that contain heavy tables, paths, config snippets, and mixed technical literals.
 
 Recent reliability improvements include:
 
@@ -69,6 +79,8 @@ Practical recommendations for complex documents:
 - Keep glossary entries for product names and domain-specific terminology
 - Re-run failed large jobs with the same source file and output directory so the checkpoint cache can be reused
 - Treat the generated translation as a technical draft and review tables, constants, and code-adjacent prose before release
+
+DITA support currently focuses on `.dita` topic-style files. It extracts translatable XML text nodes, preserves non-translatable code-like regions, and writes the translated output back as `.dita`.
 
 ## Runtime Config
 
@@ -102,6 +114,8 @@ UI status notes:
 - Startup only validates whether key config fields are present; it does not send a network request yet
 - Real connectivity is checked when translation starts
 - Translation progress now reports both `正在处理第 x/N 批` and `已完成批次 x/N`
+- Windows release zip names now include the app version, and the packaged `DocTranslationTool.exe` also carries Windows file version metadata
+- Local macOS packages read runtime config from the directory that contains `DocTranslationTool.app`
 
 ## Main User Docs
 
@@ -122,4 +136,4 @@ When preparing a new release:
 
 1. Update `doc_translation_tool/__init__.py`
 2. Append release notes to `CHANGELOG.md`
-3. Rebuild the Windows package
+3. Rebuild the desktop package for the target platform

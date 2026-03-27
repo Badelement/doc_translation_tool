@@ -12,12 +12,10 @@
     "max_retries": 2,
     "batch_size": 8,
     "parallel_batches": 2,
-    "temperature": 0.2
+    "temperature": 0.2,
+    "max_tokens": null
   },
   "markdown": {
     "front_matter_translatable_fields": ["title", "subtitle", "desc"]
-  },
-  "glossary": {
-    "path": "glossary.json"
   }
 }

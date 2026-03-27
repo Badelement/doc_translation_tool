@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 from pytest import MonkeyPatch
+from PySide6.QtWidgets import QDialog
 
 from doc_translation_tool import __version__
 from doc_translation_tool.services import TranslationPipelineResult
@@ -252,6 +253,53 @@ def test_handle_source_path_received_auto_switches_to_zh_to_en_for_chinese_file(
     window.deleteLater()
 
 
+def test_handle_source_path_received_auto_switches_for_chinese_dita_file(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "chinese.dita"
+    source_file.write_text(
+        "<topic id='demo'><title>标题</title><body><p>本文档用于说明启动流程。</p></body></topic>\n",
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    window.en_to_zh_radio.setChecked(True)
+    window.handle_source_path_received(str(source_file))
+
+    assert window.zh_to_en_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_source_path_received_uses_document_specific_language_detection_for_dita(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "chinese-with-code.dita"
+    source_file.write_text(
+        (
+            "<topic id='demo'>"
+            "<title>启动说明</title>"
+            "<body>"
+            "<p>本文档用于说明启动流程。</p>"
+            "<codeblock>This code block contains many English words and driver configuration details.</codeblock>"
+            "<screen>CONFIG_DRIVER_BOOT=1</screen>"
+            "</body>"
+            "</topic>\n"
+        ),
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    window.en_to_zh_radio.setChecked(True)
+    window.handle_source_path_received(str(source_file))
+
+    assert window.zh_to_en_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
 def test_commit_source_path_text_auto_switches_direction_without_warning(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
@@ -279,6 +327,44 @@ def test_commit_source_path_text_auto_switches_direction_without_warning(
 
     assert captured == {}
     assert window.en_to_zh_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
+def test_commit_source_path_text_accepts_dita_file(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "topic.dita"
+    source_file.write_text(
+        "<topic id='demo'><title>标题</title><body><p>本文档用于说明启动流程。</p></body></topic>\n",
+        encoding="utf-8",
+    )
+
+    window = MainWindow()
+    window.source_path_edit.setText(str(source_file))
+    window._commit_source_path_text()
+
+    assert window.source_path_edit.text() == str(source_file)
+    assert window.output_dir_edit.text() == str(tmp_path)
+    assert window.zh_to_en_radio.isChecked() is True
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_source_path_received_skips_language_detection_for_non_utf8_file(
+    tmp_path: Path,
+    qapp,
+) -> None:
+    source_file = tmp_path / "legacy.md"
+    source_file.write_bytes(b"\xff\xfe\x00\x00")
+
+    window = MainWindow()
+    window.handle_source_path_received(str(source_file))
+
+    log_text = window.log_output.toPlainText()
+    assert window.source_path_edit.text() == str(source_file)
+    assert "[语言] 自动检测失败，已跳过：" in log_text
     window.close()
     window.deleteLater()
 
@@ -516,7 +602,10 @@ def test_handle_worker_finished_keeps_completion_status_context(qapp) -> None:
     window.deleteLater()
 
 
-def test_handle_reset_clicked_restores_idle_state(tmp_path: Path, qapp) -> None:
+def test_handle_reset_clicked_restores_idle_state_and_preserves_inputs(
+    tmp_path: Path,
+    qapp,
+) -> None:
     source_file = tmp_path / "demo.md"
     source_file.write_text("# demo\n", encoding="utf-8")
 
@@ -533,9 +622,9 @@ def test_handle_reset_clicked_restores_idle_state(tmp_path: Path, qapp) -> None:
     window.handle_reset_clicked()
 
     log_text = window.log_output.toPlainText()
-    assert window.source_path_edit.text() == ""
-    assert window.output_dir_edit.text() == ""
-    assert window.zh_to_en_radio.isChecked() is True
+    assert window.source_path_edit.text() == str(source_file)
+    assert window.output_dir_edit.text() == str(tmp_path)
+    assert window.en_to_zh_radio.isChecked() is True
     assert window.progress_bar.value() == 0
     assert window.progress_label.text() == "等待开始翻译"
     assert window.connection_hint_label.text() == "模型状态：配置不完整"
@@ -597,5 +686,119 @@ def test_handle_translation_failed_shows_glossary_stage_suggestion(
     assert "建议：" in captured["message"]
     assert "glossary.json" in captured["message"]
     assert "[建议]" in log_text
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_open_model_config_clicked_refreshes_model_status_after_save(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    qapp,
+) -> None:
+    class FakeDialog:
+        class DialogCode:
+            Accepted = QDialog.DialogCode.Accepted
+
+        def __init__(self, *, project_root: Path, parent=None) -> None:
+            del parent
+            self.project_root = Path(project_root)
+
+        def exec(self):
+            (self.project_root / ".env").write_text(
+                "\n".join(
+                    [
+                        "DOC_TRANS_BASE_URL=https://saved.example/v1",
+                        "DOC_TRANS_API_KEY=saved-secret",
+                        "DOC_TRANS_MODEL=saved-model",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return self.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        "doc_translation_tool.ui.main_window.ModelConfigDialog",
+        FakeDialog,
+    )
+
+    window = MainWindow(project_root=tmp_path)
+
+    assert window.connection_hint_label.text() == "模型状态：配置不完整"
+    window.handle_open_model_config_clicked()
+
+    assert window.connection_hint_label.text() == "模型状态：配置已加载，待检查连通性"
+    assert window.statusBar().currentMessage() == "模型配置已保存"
+    assert "模型配置已保存到 .env" in window.log_output.toPlainText()
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_open_glossary_config_clicked_saves_glossary_and_updates_status(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    qapp,
+) -> None:
+    class FakeDialog:
+        class DialogCode:
+            Accepted = QDialog.DialogCode.Accepted
+
+        def __init__(self, *, project_root: Path, parent=None) -> None:
+            del parent
+            self.project_root = Path(project_root)
+
+        def exec(self):
+            (self.project_root / "glossary.json").write_text(
+                '[{"source": "远程音效", "target": "remote sound effect"}]\n',
+                encoding="utf-8",
+            )
+            return self.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        "doc_translation_tool.ui.main_window.GlossaryConfigDialog",
+        FakeDialog,
+    )
+
+    window = MainWindow(project_root=tmp_path)
+
+    window.handle_open_glossary_config_clicked()
+
+    assert window.statusBar().currentMessage() == "术语配置已保存"
+    assert "术语配置已保存到 glossary.json" in window.log_output.toPlainText()
+    window.close()
+    window.deleteLater()
+
+
+def test_handle_open_glossary_config_clicked_shows_warning_on_load_failure(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    qapp,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_warning(_parent, title: str, message: str) -> None:
+        captured["title"] = title
+        captured["message"] = message
+
+    class BrokenDialog:
+        def __init__(self, *, project_root: Path, parent=None) -> None:
+            del project_root, parent
+            raise ValueError("bad glossary")
+
+    monkeypatch.setattr(
+        "doc_translation_tool.ui.main_window.GlossaryConfigDialog",
+        BrokenDialog,
+    )
+    monkeypatch.setattr(
+        "doc_translation_tool.ui.main_window.QMessageBox.warning",
+        fake_warning,
+    )
+
+    window = MainWindow(project_root=tmp_path)
+
+    window.handle_open_glossary_config_clicked()
+
+    assert captured["title"] == "术语配置加载失败"
+    assert captured["message"] == "bad glossary"
     window.close()
     window.deleteLater()

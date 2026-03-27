@@ -26,6 +26,11 @@ from PySide6.QtWidgets import (
 
 from doc_translation_tool import __version__
 from doc_translation_tool.config import load_app_settings
+from doc_translation_tool.document_types import (
+    is_supported_document,
+    source_file_dialog_filter,
+    source_path_placeholder_text,
+)
 from doc_translation_tool.models import TranslationTask
 from doc_translation_tool.services import (
     DocumentTranslationPipeline,
@@ -33,11 +38,16 @@ from doc_translation_tool.services import (
     TranslationPipelineResult,
 )
 from doc_translation_tool.services.lang_detect import (
-    detect_language_from_file,
+    detect_language_for_document,
     direction_display_name,
     language_matches_direction,
 )
-from doc_translation_tool.services.validator import validate_translation_inputs
+from doc_translation_tool.services.validator import (
+    InputValidationResult,
+    validate_translation_inputs,
+)
+from doc_translation_tool.ui.glossary_config_dialog import GlossaryConfigDialog
+from doc_translation_tool.ui.model_config_dialog import ModelConfigDialog
 from doc_translation_tool.ui.path_line_edit import PathLineEdit
 
 
@@ -119,6 +129,10 @@ class MainWindow(QMainWindow):
         self.output_dir_edit.editingFinished.connect(self._commit_output_directory_text)
         self.zh_to_en_radio.toggled.connect(self._handle_direction_toggled)
         self.en_to_zh_radio.toggled.connect(self._handle_direction_toggled)
+        self.open_model_config_button.clicked.connect(self.handle_open_model_config_clicked)
+        self.open_glossary_config_button.clicked.connect(
+            self.handle_open_glossary_config_clicked
+        )
         self.reset_button.clicked.connect(self.handle_reset_clicked)
         self.start_button.clicked.connect(self.handle_start_clicked)
 
@@ -129,12 +143,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(6)
 
-        title_label = QLabel(f"Markdown 文档翻译工具 v{__version__}", frame)
+        title_label = QLabel(f"文档翻译工具 v{__version__}", frame)
         title_label.setObjectName("titleLabel")
         title_label.setStyleSheet("font-size: 24px; font-weight: 700;")
 
         subtitle_label = QLabel(
-            "当前阶段：已接入文件与目录选择、语言提醒、Markdown 保护分段、"
+            "当前阶段：已接入文件与目录选择、语言提醒、Markdown/DITA 文档处理、"
             "批量翻译回填以及输出文件写入。",
             frame,
         )
@@ -155,11 +169,11 @@ class MainWindow(QMainWindow):
         output_label = QLabel("生成目录", group)
 
         self.source_path_edit = PathLineEdit(
-            path_kind="markdown_file",
+            path_kind="document_file",
             on_path_received=self.handle_source_path_received,
             parent=group,
         )
-        self.source_path_edit.setPlaceholderText("请选择、拖入或粘贴 .md 文件路径")
+        self.source_path_edit.setPlaceholderText(source_path_placeholder_text())
 
         self.output_dir_edit = PathLineEdit(
             path_kind="directory",
@@ -252,11 +266,21 @@ class MainWindow(QMainWindow):
         self.start_button.setObjectName("startButton")
         self.start_button.setMinimumHeight(40)
 
+        self.open_model_config_button = QPushButton("模型配置", self)
+        self.open_model_config_button.setObjectName("openModelConfigButton")
+        self.open_model_config_button.setMinimumHeight(40)
+
+        self.open_glossary_config_button = QPushButton("术语配置", self)
+        self.open_glossary_config_button.setObjectName("openGlossaryConfigButton")
+        self.open_glossary_config_button.setMinimumHeight(40)
+
         self.reset_button = QPushButton("重置界面", self)
         self.reset_button.setObjectName("resetButton")
         self.reset_button.setMinimumHeight(40)
 
         layout.addWidget(self.connection_hint_label, 1)
+        layout.addWidget(self.open_model_config_button, 0)
+        layout.addWidget(self.open_glossary_config_button, 0)
         layout.addWidget(self.reset_button, 0)
         layout.addWidget(self.start_button, 0)
         return layout
@@ -265,8 +289,10 @@ class MainWindow(QMainWindow):
         try:
             settings = load_app_settings(self.project_root)
         except Exception as exc:
-            self.connection_hint_label.setText("模型状态：配置加载失败")
-            self.connection_hint_label.setToolTip(f"读取配置失败：{exc}")
+            self._set_connection_hint(
+                "模型状态：配置加载失败",
+                f"读取配置失败：{exc}",
+            )
             return
 
         missing_fields: list[str] = []
@@ -278,16 +304,16 @@ class MainWindow(QMainWindow):
             missing_fields.append("model")
 
         if missing_fields:
-            self.connection_hint_label.setText("模型状态：配置不完整")
-            self.connection_hint_label.setToolTip(
+            self._set_connection_hint(
+                "模型状态：配置不完整",
                 "缺少关键项："
                 + ", ".join(missing_fields)
                 + "。开始翻译前请先补齐。"
             )
             return
 
-        self.connection_hint_label.setText("模型状态：配置已加载，待检查连通性")
-        self.connection_hint_label.setToolTip(
+        self._set_connection_hint(
+            "模型状态：配置已加载，待检查连通性",
             "已检测到 base_url、api_key、model。实际连通性会在开始翻译时检查。"
         )
 
@@ -299,7 +325,7 @@ class MainWindow(QMainWindow):
             self,
             "选择目标翻译文件",
             self._suggest_source_file_directory(),
-            "Markdown Files (*.md);;All Files (*)",
+            source_file_dialog_filter(),
         )
         if not selected_path:
             return
@@ -320,13 +346,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已选择生成目录")
 
     def handle_source_path_received(self, source_path: str) -> None:
-        self.set_source_path(source_path)
-        self._auto_select_direction_from_source()
-        self._warn_if_language_mismatch(trigger="source")
+        self._apply_source_path(source_path, warn_trigger="source")
         self.statusBar().showMessage("已更新目标翻译文件")
 
     def handle_output_directory_received(self, output_directory: str) -> None:
-        self.set_output_directory(output_directory)
+        self._apply_output_directory(output_directory)
         self.statusBar().showMessage("已更新生成目录")
 
     def handle_start_clicked(self) -> None:
@@ -347,7 +371,35 @@ class MainWindow(QMainWindow):
             direction=self.current_direction(),
         )
 
-    def validate_inputs(self):
+    def handle_open_model_config_clicked(self) -> None:
+        if self._is_worker_running():
+            return
+
+        dialog = ModelConfigDialog(project_root=self.project_root, parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+
+        self._refresh_model_config_hint()
+        self._append_log("[配置] 模型配置已保存到 .env。")
+        self.statusBar().showMessage("模型配置已保存")
+
+    def handle_open_glossary_config_clicked(self) -> None:
+        if self._is_worker_running():
+            return
+
+        try:
+            dialog = GlossaryConfigDialog(project_root=self.project_root, parent=self)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "术语配置加载失败", str(exc))
+            return
+
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+
+        self._append_log("[术语] 术语配置已保存到 glossary.json。")
+        self.statusBar().showMessage("术语配置已保存")
+
+    def validate_inputs(self) -> InputValidationResult:
         validation_result = validate_translation_inputs(
             self.source_path_edit.text(),
             self.output_dir_edit.text(),
@@ -382,30 +434,24 @@ class MainWindow(QMainWindow):
         self._append_log(f"[路径] 生成目录：{normalized_path}")
 
     def _commit_source_path_text(self) -> None:
+        source_path = self._resolve_supported_source_path()
+        if source_path is not None:
+            self._apply_source_path(str(source_path), warn_trigger="source")
+            return
+
         source_text = self.source_path_edit.text().strip()
-        if not source_text:
-            return
-
-        source_path = Path(source_text).expanduser()
-        if source_path.is_file() and source_path.suffix.lower() == ".md":
-            self.set_source_path(str(source_path))
-            self._auto_select_direction_from_source()
-            self._warn_if_language_mismatch(trigger="source")
-            return
-
-        self._append_log(f"[路径] 未识别为有效 Markdown 文件：{source_text}")
+        if source_text:
+            self._append_log(f"[路径] 未识别为有效文档文件：{source_text}")
 
     def _commit_output_directory_text(self) -> None:
-        output_text = self.output_dir_edit.text().strip()
-        if not output_text:
-            return
-
-        output_path = Path(output_text).expanduser()
-        if output_path.is_dir():
+        output_path = self._resolve_existing_output_directory()
+        if output_path is not None:
             self.set_output_directory(str(output_path))
             return
 
-        self._append_log(f"[路径] 未识别为有效输出目录：{output_text}")
+        output_text = self.output_dir_edit.text().strip()
+        if output_text:
+            self._append_log(f"[路径] 未识别为有效输出目录：{output_text}")
 
     def _handle_direction_toggled(self, checked: bool) -> None:
         if not checked:
@@ -413,15 +459,9 @@ class MainWindow(QMainWindow):
         self._warn_if_language_mismatch(trigger="toggle")
 
     def _auto_select_direction_from_source(self) -> None:
-        source_text = self.source_path_edit.text().strip()
-        if not source_text:
+        detection_result = self._detect_source_language_for_ui()
+        if detection_result is None:
             return
-
-        source_path = Path(source_text).expanduser()
-        if not source_path.is_file() or source_path.suffix.lower() != ".md":
-            return
-
-        detection_result = detect_language_from_file(source_path)
         if not detection_result.is_confident:
             return
 
@@ -437,15 +477,9 @@ class MainWindow(QMainWindow):
                 self._append_log("[语言] 检测到英文内容，已自动切换为：英译中")
 
     def _warn_if_language_mismatch(self, *, trigger: str) -> None:
-        source_text = self.source_path_edit.text().strip()
-        if not source_text:
+        detection_result = self._detect_source_language_for_ui()
+        if detection_result is None:
             return
-
-        source_path = Path(source_text).expanduser()
-        if not source_path.is_file() or source_path.suffix.lower() != ".md":
-            return
-
-        detection_result = detect_language_from_file(source_path)
         self._append_log(
             "[语言] 检测结果："
             f"{detection_result.language} "
@@ -470,6 +504,17 @@ class MainWindow(QMainWindow):
         if trigger in {"toggle", "start", "source"}:
             QMessageBox.warning(self, "语言提示", message)
 
+    def _detect_source_language_for_ui(self):
+        source_path = self._resolve_supported_source_path()
+        if source_path is None:
+            return None
+
+        try:
+            return detect_language_for_document(source_path)
+        except (OSError, UnicodeDecodeError) as exc:
+            self._append_log(f"[语言] 自动检测失败，已跳过：{exc}")
+            return None
+
     def _suggest_source_file_directory(self) -> str:
         source_text = self.source_path_edit.text().strip()
         if source_text:
@@ -478,20 +523,16 @@ class MainWindow(QMainWindow):
                 return str(source_path)
             return str(source_path.parent)
 
-        output_text = self.output_dir_edit.text().strip()
-        if output_text:
-            output_path = Path(output_text).expanduser()
-            if output_path.is_dir():
-                return str(output_path)
+        output_path = self._resolve_existing_output_directory()
+        if output_path is not None:
+            return str(output_path)
 
         return str(Path.home())
 
     def _suggest_output_directory(self) -> str:
-        output_text = self.output_dir_edit.text().strip()
-        if output_text:
-            output_path = Path(output_text).expanduser()
-            if output_path.is_dir():
-                return str(output_path)
+        output_path = self._resolve_existing_output_directory()
+        if output_path is not None:
+            return str(output_path)
 
         source_text = self.source_path_edit.text().strip()
         if source_text:
@@ -532,13 +573,10 @@ class MainWindow(QMainWindow):
         return f"{minutes:02d}:{secs:02d}"
 
     def handle_reset_clicked(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._is_worker_running():
             return
 
         self._task_started_at = None
-        self.source_path_edit.clear()
-        self.output_dir_edit.clear()
-        self.zh_to_en_radio.setChecked(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText("等待开始翻译")
         self.start_button.setText("开始翻译")
@@ -555,7 +593,7 @@ class MainWindow(QMainWindow):
         output_dir: str,
         direction: str,
     ) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._is_worker_running():
             return
 
         task = TranslationTask(
@@ -572,14 +610,15 @@ class MainWindow(QMainWindow):
         worker.finished.connect(self._handle_worker_finished)
 
         self._worker = worker
-        self.start_button.setEnabled(False)
-        self.reset_button.setEnabled(False)
+        self._set_action_buttons_enabled(False)
         self.start_button.setText("翻译进行中")
         self.progress_bar.setValue(0)
         self.progress_label.setText("正在启动翻译任务")
         self._task_started_at = perf_counter()
-        self.connection_hint_label.setText("模型状态：正在检查接口连通性")
-        self.connection_hint_label.setToolTip("正在验证当前配置是否能正常调用模型接口。")
+        self._set_connection_hint(
+            "模型状态：正在检查接口连通性",
+            "正在验证当前配置是否能正常调用模型接口。",
+        )
         self.statusBar().showMessage("正在执行翻译任务")
         self._append_log("[任务] 已启动后台翻译任务。")
         worker.start()
@@ -600,8 +639,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(display_message)
 
     def _handle_connection_checked(self, message: str) -> None:
-        self.connection_hint_label.setText(f"模型状态：接口连通 ({message})")
-        self.connection_hint_label.setToolTip("已完成配置读取和接口连通性检查，可以继续执行翻译。")
+        self._set_connection_hint(
+            f"模型状态：接口连通 ({message})",
+            "已完成配置读取和接口连通性检查，可以继续执行翻译。",
+        )
 
     def _handle_translation_succeeded(self, result: TranslationPipelineResult) -> None:
         self.progress_bar.setValue(100)
@@ -633,11 +674,15 @@ class MainWindow(QMainWindow):
         if suggestion:
             self._append_log(f"[建议] {suggestion}")
         if stage == "model_config":
-            self.connection_hint_label.setText("模型状态：配置异常")
-            self.connection_hint_label.setToolTip("请先修正 .env 或 settings.json 中的模型配置。")
+            self._set_connection_hint(
+                "模型状态：配置异常",
+                "请先修正 .env 或 settings.json 中的模型配置。",
+            )
         elif stage == "check_connection":
-            self.connection_hint_label.setText("模型状态：接口检查失败")
-            self.connection_hint_label.setToolTip("配置已读取，但接口未通过连通性检查。")
+            self._set_connection_hint(
+                "模型状态：接口检查失败",
+                "配置已读取，但接口未通过连通性检查。",
+            )
         QMessageBox.critical(
             self,
             f"{stage_label}失败",
@@ -645,8 +690,7 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_worker_finished(self) -> None:
-        self.start_button.setEnabled(True)
-        self.reset_button.setEnabled(True)
+        self._set_action_buttons_enabled(True)
         self.start_button.setText("开始下一次翻译")
         current_status = self.statusBar().currentMessage()
         if current_status.startswith("翻译完成"):
@@ -660,10 +704,53 @@ class MainWindow(QMainWindow):
             self._worker.deleteLater()
             self._worker = None
 
+    def _is_worker_running(self) -> bool:
+        return self._worker is not None and self._worker.isRunning()
+
+    def _set_connection_hint(self, text: str, tooltip: str = "") -> None:
+        self.connection_hint_label.setText(text)
+        self.connection_hint_label.setToolTip(tooltip)
+
+    def _set_action_buttons_enabled(self, enabled: bool) -> None:
+        self.start_button.setEnabled(enabled)
+        self.open_model_config_button.setEnabled(enabled)
+        self.open_glossary_config_button.setEnabled(enabled)
+        self.reset_button.setEnabled(enabled)
+
+    def _apply_source_path(self, source_path: str, *, warn_trigger: str) -> None:
+        self.set_source_path(source_path)
+        self._auto_select_direction_from_source()
+        self._warn_if_language_mismatch(trigger=warn_trigger)
+
+    def _apply_output_directory(self, output_directory: str) -> None:
+        self.set_output_directory(output_directory)
+
+    def _resolve_supported_source_path(self) -> Path | None:
+        source_text = self.source_path_edit.text().strip()
+        if not source_text:
+            return None
+
+        source_path = Path(source_text).expanduser()
+        if source_path.is_file() and is_supported_document(source_path):
+            return source_path
+        return None
+
+    def _resolve_existing_output_directory(self) -> Path | None:
+        output_text = self.output_dir_edit.text().strip()
+        if not output_text:
+            return None
+
+        output_path = Path(output_text).expanduser()
+        if output_path.is_dir():
+            return output_path
+        return None
+
     def _display_stage_name(self, stage: str) -> str:
         mapping = {
             "read_source": "文件读取",
+            "source_type": "源文件类型",
             "model_config": "模型配置",
+            "parse_document": "文档解析",
             "glossary": "术语表加载",
             "check_connection": "模型连接",
             "translate": "翻译执行",
@@ -682,7 +769,9 @@ class MainWindow(QMainWindow):
 
         mapping = {
             "read_source": "请检查源文件路径、文件占用状态和 UTF-8 编码。",
+            "source_type": "请选择受支持的源文件，目前支持 .md 和 .dita。",
             "model_config": "请检查 .env 或 settings.json 中的 base_url、api_key、model 等配置。",
+            "parse_document": "请检查源文件结构是否完整；如果是 DITA/XML，请重点确认标签是否闭合、声明和 DOCTYPE 是否正确。",
             "glossary": "请检查 glossary.json 是否为 UTF-8 JSON 数组，且每项都包含 source 和 target。",
             "check_connection": "请检查接口地址、API key、网络连通性，以及本机代理配置是否干扰请求。",
             "translate": "请查看日志中的批次号和片段 ID，定位是哪个批次重试或最终失败。",

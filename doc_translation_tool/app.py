@@ -6,9 +6,24 @@ from pathlib import Path
 from doc_translation_tool import __version__
 
 
+def _resolve_frozen_runtime_project_root(executable_path: str | Path) -> Path:
+    executable = Path(executable_path).resolve()
+
+    # For macOS app bundles, keep runtime config next to the .app so end users
+    # do not need to edit files inside Contents/.
+    if (
+        executable.parent.name == "MacOS"
+        and executable.parent.parent.name == "Contents"
+        and executable.parent.parent.parent.suffix == ".app"
+    ):
+        return executable.parent.parent.parent.parent
+
+    return executable.parent
+
+
 def resolve_runtime_project_root() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        return _resolve_frozen_runtime_project_root(sys.executable)
 
     return Path(__file__).resolve().parent.parent
 
@@ -21,7 +36,7 @@ def describe_layout() -> str:
             f"Version: {__version__}",
             f"Project root: {project_root}",
             "Status: GUI translation pipeline ready",
-            "Next task: package Windows delivery build",
+            "Next task: package desktop delivery build",
         ]
     )
 

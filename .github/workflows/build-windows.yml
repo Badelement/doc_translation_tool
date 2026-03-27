@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: DocTranslationTool-win64-zip
-          path: dist/DocTranslationTool-win64.zip
+          path: dist/DocTranslationTool-v*-win64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -56,5 +56,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2.5.0
         with:
-          files: dist/DocTranslationTool-win64.zip
+          files: dist/DocTranslationTool-v*-win64.zip
           generate_release_notes: true

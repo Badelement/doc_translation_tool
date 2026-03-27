@@ -5,9 +5,15 @@ $distRoot = Join-Path $projectRoot "dist"
 $stagingDistRoot = Join-Path $projectRoot "dist_stage"
 $buildRoot = Join-Path $projectRoot "build"
 $releaseName = "DocTranslationTool"
+$packageRealEnv = $env:DOC_TRANS_PACKAGE_REAL_ENV -eq "1"
+$version = (& python -c "from doc_translation_tool import __version__; print(__version__)").Trim()
+if ([string]::IsNullOrWhiteSpace($version)) {
+    throw "Failed to resolve package version."
+}
+$versionLabel = "v$version"
 $releaseDir = Join-Path $distRoot $releaseName
 $stagingReleaseDir = Join-Path $stagingDistRoot $releaseName
-$zipPath = Join-Path $distRoot "$releaseName-win64.zip"
+$zipPath = Join-Path $distRoot "$releaseName-$versionLabel-win64.zip"
 
 function Remove-PackagedPath {
     param (
@@ -24,6 +30,8 @@ function Remove-PackagedPath {
 }
 
 Write-Host "[build] Project root: $projectRoot"
+Write-Host "[build] Package version: $version"
+Write-Host "[build] Package real .env: $packageRealEnv"
 
 if (Test-Path $stagingDistRoot) {
     Write-Host "[build] Removing staging dist directory: $stagingDistRoot"
@@ -35,10 +43,55 @@ if (Test-Path $buildRoot) {
     Remove-Item -Recurse -Force $buildRoot
 }
 
+New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+
 if (Test-Path $zipPath) {
     Write-Host "[build] Removing existing release archive: $zipPath"
     Remove-Item -Force $zipPath
 }
+
+$versionParts = New-Object System.Collections.Generic.List[int]
+$version.Split(".") | ForEach-Object {
+    [void]$versionParts.Add([int]$_)
+}
+while ($versionParts.Count -lt 4) {
+    [void]$versionParts.Add(0)
+}
+$versionTuple = $versionParts -join ", "
+$versionInfoPath = Join-Path $buildRoot "windows-version-info.txt"
+$versionInfoContent = @(
+    "VSVersionInfo(",
+    "  ffi=FixedFileInfo(",
+    "    filevers=($versionTuple),",
+    "    prodvers=($versionTuple),",
+    "    mask=0x3f,",
+    "    flags=0x0,",
+    "    OS=0x40004,",
+    "    fileType=0x1,",
+    "    subtype=0x0,",
+    "    date=(0, 0)",
+    "  ),",
+    "  kids=[",
+    "    StringFileInfo([",
+    "      StringTable(",
+    "        '040904B0',",
+    "        [",
+    "          StringStruct('CompanyName', 'Badelement'),",
+    "          StringStruct('FileDescription', 'Document Translation Tool'),",
+    "          StringStruct('FileVersion', '$version'),",
+    "          StringStruct('InternalName', '$releaseName.exe'),",
+    "          StringStruct('OriginalFilename', '$releaseName.exe'),",
+    "          StringStruct('ProductName', 'Document Translation Tool'),",
+    "          StringStruct('ProductVersion', '$version')",
+    "        ]",
+    "      )",
+    "    ]),",
+    "    VarFileInfo([VarStruct('Translation', [1033, 1200])])",
+    "  ]",
+    ")"
+)
+Set-Content -LiteralPath $versionInfoPath -Value $versionInfoContent -Encoding UTF8
+Write-Host "[build] Generated Windows version resource: $versionInfoPath"
 
 python -m PyInstaller `
     --noconfirm `
@@ -48,6 +101,7 @@ python -m PyInstaller `
     --distpath $stagingDistRoot `
     --workpath $buildRoot `
     --specpath $buildRoot `
+    --version-file $versionInfoPath `
     --hidden-import PySide6.QtCore `
     --hidden-import PySide6.QtGui `
     --hidden-import PySide6.QtWidgets `
@@ -63,16 +117,19 @@ $templateFiles = @(
 
 $guideFileName = [string]([char]0x4F7F) + [char]0x7528 + [char]0x6307 + [char]0x5357 + ".md"
 
-[string]$runtimeEnvSource = Join-Path $projectRoot ".env"
+[string]$runtimeEnvSource = Join-Path $projectRoot ".env.example"
+if ($packageRealEnv) {
+    $runtimeEnvSource = Join-Path $projectRoot ".env"
+}
 if (-not (Test-Path -LiteralPath $runtimeEnvSource)) {
-    $runtimeEnvSource = Join-Path $projectRoot ".env.example"
+    throw "Runtime env source not found: $runtimeEnvSource"
 }
 
 Copy-Item `
     -LiteralPath $runtimeEnvSource `
     -Destination (Join-Path $stagingReleaseDir ".env") `
     -Force
-Write-Host "[build] Copied .env"
+Write-Host "[build] Copied runtime env template from: $runtimeEnvSource"
 
 foreach ($fileName in $templateFiles) {
     $source = Join-Path $projectRoot $fileName

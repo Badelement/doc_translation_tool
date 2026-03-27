@@ -4,6 +4,27 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+Added:
+
+- Added single-file `.dita` translation support through the main desktop flow alongside existing Markdown support
+- Added a DITA document handler, document-type registry, and `.dita` fixtures / regression coverage for topic-style XML content
+- Added a registrable document-format layer so future file types can be plugged in through centralized type and handler registration
+- Added document-type-aware language detection hooks so handlers can provide cleaner text samples for auto direction switching and mismatch warnings
+
+Improved:
+
+- Updated GUI and pipeline wording to report generic document parsing instead of Markdown-only parsing when multi-format support is active
+- Updated repository docs and the Chinese user guide to describe current Markdown plus DITA support and extension-preserving output behavior
+- Improved DITA language detection to ignore non-translatable code-like regions such as `codeblock` and `screen` when estimating source language
+- Upgraded the Windows packaging workflow actions to Node 24 compatible versions to address GitHub Actions deprecation warnings during release builds
+- Updated the Windows packaging flow so the release zip filename includes the app version and the packaged `DocTranslationTool.exe` carries Windows file version metadata
+- Added a dedicated macOS packaging script and updated frozen runtime path handling so packaged `.app` builds read config from the directory that contains the app bundle
+
+Docs:
+
+- Recorded the packaging metadata improvements in `开发问题记录.md`
+- Updated packaging docs to describe the local macOS build and runtime config layout
+
 ## v0.4.3 - 2026-03-23
 
 Improved:

@@ -7,12 +7,22 @@ from time import perf_counter
 from typing import Callable
 
 from doc_translation_tool.config import AppSettings, load_app_settings
+from doc_translation_tool.document_types import (
+    detect_document_type,
+    supported_source_error_message,
+)
+from doc_translation_tool.documents import (
+    DocumentHandler,
+    DocumentParseError,
+    MarkdownDocumentHandler,
+    get_handler_for_document_type,
+)
 from doc_translation_tool.llm import LLMClientError, create_llm_client
 from doc_translation_tool.markdown import MarkdownParser, MarkdownProtector, MarkdownSegmenter
 from doc_translation_tool.models.schema import TranslationTask
 from doc_translation_tool.services.glossary_loader import load_glossary
 from doc_translation_tool.services.output_writer import (
-    MarkdownOutputWriter,
+    DocumentOutputWriter,
     OutputWriteError,
     OutputWriteResult,
 )
@@ -50,7 +60,7 @@ class TranslationPipelineError(RuntimeError):
 
 
 class DocumentTranslationPipeline:
-    """Run the full Markdown translation flow from input file to output file."""
+    """Run the full document translation flow from input file to output file."""
 
     _TRANSLATION_PROGRESS_START = 45
     _TRANSLATION_PROGRESS_END = 95
@@ -65,19 +75,29 @@ class DocumentTranslationPipeline:
         parser: MarkdownParser | None = None,
         protector: MarkdownProtector | None = None,
         segmenter: MarkdownSegmenter | None = None,
-        output_writer: MarkdownOutputWriter | None = None,
-        task_service_factory: Callable[[object], TranslationTaskService] | None = None,
+        output_writer: DocumentOutputWriter | None = None,
+        task_service_factory: Callable[[object, DocumentHandler], TranslationTaskService]
+        | None = None,
+        document_type_detector: Callable[[str | Path], str | None] = detect_document_type,
         glossary_loader: Callable[[str | Path], list[dict[str, str]]] = load_glossary,
         checkpoint_cache: TranslationCheckpointCache | None = None,
     ) -> None:
         self.project_root = Path(project_root)
         self.settings_loader = settings_loader
         self.client_factory = client_factory
-        self.parser = parser or MarkdownParser()
-        self.protector = protector
-        self.segmenter = segmenter or MarkdownSegmenter()
-        self.output_writer = output_writer or MarkdownOutputWriter()
-        self.task_service_factory = task_service_factory or TranslationTaskService
+        self.document_type_detector = document_type_detector
+        self.markdown_handler = MarkdownDocumentHandler(
+            parser=parser,
+            protector=protector,
+            segmenter=segmenter,
+        )
+        self.output_writer = output_writer or DocumentOutputWriter()
+        self.task_service_factory = task_service_factory or (
+            lambda client, handler: TranslationTaskService(
+                client,
+                rebuilder=handler,
+            )
+        )
         self.glossary_loader = glossary_loader
         self.checkpoint_cache = checkpoint_cache or TranslationCheckpointCache()
 
@@ -140,17 +160,19 @@ class DocumentTranslationPipeline:
         emit_progress("源文件读取完成", 10)
 
         client = None
+        handler = None
         try:
-            settings = self.settings_loader(self.project_root)
-            client = self.client_factory(settings.llm)
-        except (ValueError, OSError) as exc:
-            raise TranslationPipelineError("model_config", f"模型配置无效：{exc}") from exc
+            try:
+                settings = self.settings_loader(self.project_root)
+                client = self.client_factory(settings.llm)
+            except (ValueError, OSError) as exc:
+                raise TranslationPipelineError("model_config", f"模型配置无效：{exc}") from exc
 
-        protector = self.protector or MarkdownProtector(
-            translatable_front_matter_fields=settings.front_matter_translatable_fields,
-        )
+            try:
+                handler = self._resolve_document_handler(task.source_path)
+            except ValueError as exc:
+                raise TranslationPipelineError("source_type", str(exc)) from exc
 
-        try:
             try:
                 glossary = self.glossary_loader(self.project_root / "glossary.json")
             except (ValueError, OSError) as exc:
@@ -189,28 +211,34 @@ class DocumentTranslationPipeline:
             )
             emit_progress("模型连接通过", 30)
 
-            emit_log("[解析] 开始解析 Markdown 结构。")
+            assert handler is not None
+            emit_log(f"[文档] 类型：{handler.document_type}")
+            emit_log(f"[解析] 开始解析 {handler.document_type} 文档结构。")
             parse_started_at = perf_counter()
-            document = self.parser.parse(source_text)
-            protected_document = protector.protect(document)
-            segmented_document = self.segmenter.segment(protected_document)
+            try:
+                prepared_document = handler.prepare_document(
+                    source_text,
+                    settings=settings,
+                )
+            except DocumentParseError as exc:
+                raise TranslationPipelineError("parse_document", str(exc)) from exc
             emit_log(
-                f"[解析] Markdown 解析完成，耗时 {format_elapsed(perf_counter() - parse_started_at)}。"
+                f"[解析] {handler.document_type} 解析完成，耗时 {format_elapsed(perf_counter() - parse_started_at)}。"
             )
-            emit_log(f"[解析] Markdown 块总数：{len(document.blocks)}")
+            emit_log(f"[解析] 文档块总数：{len(prepared_document.blocks)}")
             emit_log(
                 "[解析] 可翻译块数："
-                f"{sum(1 for block in protected_document.blocks if block.translatable)}"
+                f"{sum(1 for block in prepared_document.blocks if block.translatable)}"
             )
             total_translation_batches = (
-                (len(segmented_document.segments) + settings.llm.batch_size - 1)
+                (len(prepared_document.segments) + settings.llm.batch_size - 1)
                 // settings.llm.batch_size
-                if segmented_document.segments
+                if prepared_document.segments
                 else 0
             )
-            emit_log(f"[翻译] 片段总数：{len(segmented_document.segments)}")
+            emit_log(f"[翻译] 片段总数：{len(prepared_document.segments)}")
             emit_log(f"[翻译] 总批次数：{total_translation_batches}")
-            emit_progress("Markdown 解析完成", 40)
+            emit_progress("文档解析完成", 40)
 
             cache_path = self.checkpoint_cache.build_cache_path(
                 source_path=task.source_path,
@@ -218,7 +246,7 @@ class DocumentTranslationPipeline:
                 direction=task.direction,
             )
             document_fingerprint = self.checkpoint_cache.build_document_fingerprint(
-                segmented_document
+                prepared_document
             )
             cached_translations = self.checkpoint_cache.load(
                 cache_path,
@@ -229,10 +257,10 @@ class DocumentTranslationPipeline:
             if cached_translations:
                 emit_log(
                     "[续跑] 已加载缓存片段："
-                    f"{len(cached_translations)}/{len(segmented_document.segments)}"
+                    f"{len(cached_translations)}/{len(prepared_document.segments)}"
                 )
 
-            task_service = self.task_service_factory(client)
+            task_service = self.task_service_factory(client, handler)
 
             def handle_batch_complete(batch_index: int, total_batches: int) -> None:
                 progress = translation_progress(batch_index, total_batches)
@@ -275,8 +303,8 @@ class DocumentTranslationPipeline:
                 )
 
             try:
-                translation_result = task_service.translate_segmented_document(
-                    segmented_document,
+                translation_result = task_service.translate_prepared_document(
+                    prepared_document,
                     direction=task.direction,
                     glossary=glossary,
                     existing_translations=cached_translations,
@@ -308,7 +336,8 @@ class DocumentTranslationPipeline:
                     source_path=task.source_path,
                     output_dir=task.output_dir,
                     direction=task.direction,
-                    markdown_text=translation_result.final_markdown_text,
+                    document_text=translation_result.final_markdown_text,
+                    output_extension=handler.output_extension(task.source_path),
                 )
             except OutputWriteError as exc:
                 raise TranslationPipelineError("write_output", f"输出文件写入失败：{exc}") from exc
@@ -330,6 +359,14 @@ class DocumentTranslationPipeline:
         finally:
             if client is not None:
                 client.close()
+
+    def _resolve_document_handler(self, source_path: str | Path) -> DocumentHandler:
+        document_type = self.document_type_detector(source_path)
+        if document_type is None:
+            raise ValueError(supported_source_error_message())
+        if document_type == self.markdown_handler.document_type:
+            return self.markdown_handler
+        return get_handler_for_document_type(document_type)
 
     def _build_pipeline_result(
         self,

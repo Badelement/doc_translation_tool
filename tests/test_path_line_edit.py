@@ -14,10 +14,25 @@ def test_extract_markdown_file_from_mime_data(tmp_path: Path) -> None:
 
     extracted = PathLineEdit.extract_path_from_mime_data(
         mime_data,
-        "markdown_file",
+        "document_file",
     )
 
     assert extracted == str(markdown_file)
+
+
+def test_extract_dita_file_from_mime_data(tmp_path: Path) -> None:
+    dita_file = tmp_path / "topic.dita"
+    dita_file.write_text("<topic id='demo'><title>标题</title></topic>\n", encoding="utf-8")
+
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(dita_file))])
+
+    extracted = PathLineEdit.extract_path_from_mime_data(
+        mime_data,
+        "document_file",
+    )
+
+    assert extracted == str(dita_file)
 
 
 def test_extract_directory_from_mime_data(tmp_path: Path) -> None:
@@ -41,7 +56,22 @@ def test_extract_rejects_non_markdown_file(tmp_path: Path) -> None:
 
     extracted = PathLineEdit.extract_path_from_mime_data(
         mime_data,
-        "markdown_file",
+        "document_file",
     )
 
     assert extracted is None
+
+
+def test_extract_markdown_file_legacy_kind_still_works(tmp_path: Path) -> None:
+    markdown_file = tmp_path / "legacy.md"
+    markdown_file.write_text("# legacy\n", encoding="utf-8")
+
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(markdown_file))])
+
+    extracted = PathLineEdit.extract_path_from_mime_data(
+        mime_data,
+        "markdown_file",
+    )
+
+    assert extracted == str(markdown_file)
