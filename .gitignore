@@ -4,6 +4,16 @@
 __pycache__/
 *.py[cod]
 
+# Sensitive files
+.env
+*.env
+!.env.example
+
+# User-specific config
+glossary.json
+settings.json
+
+# Build outputs
 releases/
 source/build/
 source/dist/
@@ -11,3 +21,17 @@ source/dist_stage/
 source/.tmp/
 source/.pytest_cache/
 source/.venv/
+
+# Translation cache
+.translation_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
