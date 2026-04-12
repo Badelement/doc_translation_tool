@@ -4,6 +4,19 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased
 
+## v0.4.7 - 2026-04-13
+
+Documentation:
+
+- Added professional README with badges, features showcase, and application screenshots
+- Added MIT LICENSE file
+- Added CONTRIBUTING.md with development guidelines and code style requirements
+- Added GitHub templates for pull requests, bug reports, and feature requests
+- Added CI/CD workflow for automated testing across multiple platforms
+- Added comprehensive CONFIGURATION.md guide covering all settings and use cases
+- Added 4 application screenshots demonstrating key features
+- Updated .gitignore to exclude sensitive configuration files
+
 Added:
 
 - Added macOS support with dedicated build script (`scripts/build_macos.sh`) and packaging documentation (`PACKAGING_MACOS.md`)
