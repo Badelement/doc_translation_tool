@@ -1,0 +1,13 @@
+.DS_Store
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+releases/
+source/build/
+source/dist/
+source/dist_stage/
+source/.tmp/
+source/.pytest_cache/
+source/.venv/

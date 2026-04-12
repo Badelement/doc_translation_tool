@@ -1,0 +1,9 @@
+PySide6<7,>=6.7
+httpx<1,>=0.28
+python-dotenv<2,>=1.0
+
+[build]
+pyinstaller<7,>=6.17
+
+[dev]
+pytest<9,>=8.0

@@ -1,0 +1,1281 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+import threading
+import time
+from concurrent.futures import ALL_COMPLETED
+
+import pytest
+
+from doc_translation_tool.config import LLMSettings
+from doc_translation_tool.llm import BaseLLMClient, LLMClientError, TranslationResult
+from doc_translation_tool.markdown import (
+    MarkdownParser,
+    MarkdownProtector,
+    MarkdownSegmenter,
+    SegmentedMarkdownDocument,
+    TranslationSegment,
+)
+from doc_translation_tool.services import TranslationTaskService
+
+
+@dataclass(slots=True)
+class FakeBatchClient(BaseLLMClient):
+    settings: LLMSettings
+    fail_once_on_batch_index: int | None = None
+
+    def __post_init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self._batch_counter = 0
+        self._failed_batches: set[int] = set()
+
+    def check_connection(self) -> str:
+        return "OK"
+
+    def translate_batch(self, items, direction: str, glossary=None):
+        self.calls.append([item.id for item in items])
+        current_batch_index = self._batch_counter
+        self._batch_counter += 1
+
+        if (
+            self.fail_once_on_batch_index is not None
+            and current_batch_index == self.fail_once_on_batch_index
+            and current_batch_index not in self._failed_batches
+        ):
+            self._failed_batches.add(current_batch_index)
+            raise LLMClientError("temporary batch failure")
+
+        suffix = "EN" if direction == "zh_to_en" else "ZH"
+        return [
+            TranslationResult(
+                id=item.id,
+                translated_text=self._build_translated_text(item.text, suffix=suffix),
+            )
+            for item in items
+        ]
+
+    def close(self) -> None:
+        return None
+
+    def _build_translated_text(self, text: str, *, suffix: str) -> str:
+        if suffix == "EN":
+            translated = re.sub(r"[\u4e00-\u9fff]+", "translated", text)
+            translated = translated.replace("，", ", ").replace("。", ".")
+            return f"[{suffix}] {translated}"
+
+        translated = re.sub(r"\b[A-Za-z][A-Za-z0-9_-]*\b", "已翻译", text)
+        return f"[{suffix}] {translated}"
+
+
+def _build_segmented_document(text: str, *, max_segment_length: int = 20):
+    parser = MarkdownParser()
+    protector = MarkdownProtector()
+    segmenter = MarkdownSegmenter(max_segment_length=max_segment_length)
+    protected = protector.protect(parser.parse(text))
+    segmented = segmenter.segment(protected)
+    return segmented
+
+
+def _build_client(*, fail_once_on_batch_index: int | None = None) -> FakeBatchClient:
+    return FakeBatchClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        ),
+        fail_once_on_batch_index=fail_once_on_batch_index,
+    )
+
+
+def test_translate_segmented_document_batches_segments() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+    client = _build_client()
+    service = TranslationTaskService(client)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert result.total_segments == len(segmented.segments)
+    assert result.total_batches >= 2
+    assert result.successful_batches == result.total_batches
+    assert result.retry_attempts == 0
+    assert len(result.translated_segment_texts) == len(segmented.segments)
+    assert all(text.startswith("[EN] ") for text in result.translated_segment_texts.values())
+
+
+def test_translate_segmented_document_emits_segment_progress_updates() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+
+    class ProgressSafeClient(FakeBatchClient):
+        def _build_translated_text(self, text: str, *, suffix: str) -> str:
+            assert suffix == "EN"
+            return f"[{suffix}] translated sentence."
+
+    client = ProgressSafeClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client)
+    progress_events: list[tuple[int, int, float]] = []
+
+    result = service.translate_prepared_document(
+        segmented,
+        direction="zh_to_en",
+        on_progress=lambda completed, total, est_seconds: progress_events.append(
+            (completed, total, est_seconds)
+        ),
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert progress_events
+    assert progress_events[-1][0] == result.total_segments
+    assert progress_events[-1][1] == result.total_segments
+
+
+def test_translate_segmented_document_retries_failed_batch_once() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+    client = _build_client(fail_once_on_batch_index=1)
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert result.retry_attempts == 1
+
+
+def test_translate_segmented_document_skips_existing_cached_segments() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+    client = _build_client()
+    service = TranslationTaskService(client)
+
+    existing_translations = {
+        segmented.segments[0].id: "[EN] cached first segment",
+    }
+    new_batches: list[dict[str, str]] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        existing_translations=existing_translations,
+        on_batch_translated=new_batches.append,
+    )
+
+    assert result.translated_segment_texts[segmented.segments[0].id] == "[EN] cached first segment"
+    assert result.reused_cached_segments == 1
+    assert result.rate_limit_backoff_count == 0
+    assert len(client.calls) == 2
+    assert all(segmented.segments[0].id not in batch for batch in client.calls)
+    assert len(new_batches) == 2
+    assert segmented.segments[0].id not in new_batches[0]
+
+
+def test_translate_segmented_document_can_run_batches_in_parallel() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+
+    class ParallelAwareClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._active_calls = 0
+            self.max_active_calls = 0
+            self._lock = threading.Lock()
+            self._barrier = threading.Barrier(2)
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            with self._lock:
+                self._active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self._active_calls)
+
+            try:
+                self._barrier.wait(timeout=1.0)
+                return super().translate_batch(items, direction, glossary)
+            finally:
+                with self._lock:
+                    self._active_calls -= 1
+
+    client = ParallelAwareClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert client.max_active_calls >= 2
+
+
+def test_translate_segmented_document_parallel_start_progress_does_not_jump_to_last_batch() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。第五句再次补充。第六句收尾说明。",
+        max_segment_length=12,
+    )
+
+    class BlockingParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._active_calls = 0
+            self._lock = threading.Lock()
+            self.first_wave_started = threading.Event()
+            self.release_batches = threading.Event()
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            with self._lock:
+                self._active_calls += 1
+                if self._active_calls >= 2:
+                    self.first_wave_started.set()
+
+            self.release_batches.wait(timeout=1.0)
+            try:
+                return super().translate_batch(items, direction, glossary)
+            finally:
+                with self._lock:
+                    self._active_calls -= 1
+
+    client = BlockingParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2)
+    started_events: list[tuple[int, int, int]] = []
+    completion_events: list[tuple[int, int]] = []
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, Exception] = {}
+
+    def run_translation() -> None:
+        try:
+            result_holder["result"] = service.translate_segmented_document(
+                segmented,
+                direction="zh_to_en",
+                on_batch_started=lambda batch_index, total_batches, completed_batches: started_events.append(
+                    (batch_index, total_batches, completed_batches)
+                ),
+                on_batch_complete=lambda batch_index, total_batches: completion_events.append(
+                    (batch_index, total_batches)
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - defensive capture for thread
+            error_holder["error"] = exc
+
+    worker = threading.Thread(target=run_translation)
+    worker.start()
+
+    assert client.first_wave_started.wait(timeout=1.0) is True
+    deadline = time.time() + 0.2
+    while len(started_events) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert started_events[:2] == [(1, 3, 0), (2, 3, 0)]
+    time.sleep(0.05)
+    assert len(started_events) == 2
+
+    client.release_batches.set()
+    worker.join(timeout=1.0)
+
+    assert "error" not in error_holder
+    assert worker.is_alive() is False
+    assert result_holder["result"].total_batches == 3
+    assert completion_events[-1] == (3, 3)
+    assert started_events[2] == (3, 3, 1)
+
+
+def test_translate_segmented_document_parallel_failure_keeps_completed_batch_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import doc_translation_tool.services.task_service as task_service_module
+
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0000",
+                block_index=0,
+                block_type="paragraph",
+                order_in_block=0,
+                text="片段一。",
+            ),
+            TranslationSegment(
+                id="seg-0001",
+                block_index=0,
+                block_type="paragraph",
+                order_in_block=1,
+                text="片段二。",
+            ),
+            TranslationSegment(
+                id="seg-0002",
+                block_index=1,
+                block_type="paragraph",
+                order_in_block=0,
+                text="片段三。",
+            ),
+            TranslationSegment(
+                id="seg-0003",
+                block_index=1,
+                block_type="paragraph",
+                order_in_block=1,
+                text="片段四。",
+            ),
+        ],
+    )
+    failed_batch_ids = {"seg-0002", "seg-0003"}
+    original_wait = task_service_module.wait
+
+    def wait_failures_first(futures, return_when):
+        done, not_done = original_wait(futures, return_when=ALL_COMPLETED)
+        ordered_done = sorted(
+            done,
+            key=lambda future: 0 if future.exception() is not None else 1,
+        )
+        return ordered_done, not_done
+
+    monkeypatch.setattr(task_service_module, "wait", wait_failures_first)
+
+    class PartialFailureParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._barrier = threading.Barrier(2)
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            self._barrier.wait(timeout=1.0)
+            if {item.id for item in items} == failed_batch_ids:
+                raise LLMClientError("permanent failure")
+            return super().translate_batch(items, direction, glossary)
+
+    client = PartialFailureParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2, max_retries=0)
+    translated_batches: list[dict[str, str]] = []
+
+    with pytest.raises(LLMClientError, match="permanent failure"):
+        service.translate_segmented_document(
+            segmented,
+            direction="zh_to_en",
+            on_batch_translated=translated_batches.append,
+        )
+
+    assert len(translated_batches) == 1
+    assert set(translated_batches[0]) == {"seg-0000", "seg-0001"}
+    assert all(
+        text.startswith("[EN] ") for text in translated_batches[0].values()
+    )
+
+
+def test_translate_segmented_document_recovers_single_segment_order_error_with_two_placeholders() -> None:
+    segment_text = "3. Edit @@PROTECT_0009@@ in the same folder as @@PROTECT_0010@@"
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0029",
+                block_index=0,
+                block_type="list_item",
+                order_in_block=0,
+                text=segment_text,
+            )
+        ],
+    )
+
+    class OrderErrorThenChunkSuccessClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            results: list[TranslationResult] = []
+            for item in items:
+                if item.text == segment_text:
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "3. 在与 @@PROTECT_0010@@ 相同的文件夹中编辑 "
+                                "@@PROTECT_0009@@"
+                            ),
+                        )
+                    )
+                    continue
+
+                if item.text == "3. Edit @@PROTECT_0009@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text="3. 编辑 @@PROTECT_0009@@",
+                        )
+                    )
+                    continue
+
+                if item.text == " in the same folder as @@PROTECT_0010@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=" 在与 @@PROTECT_0010@@ 相同的文件夹中",
+                        )
+                    )
+                    continue
+
+                raise AssertionError(f"Unexpected item text: {item.text!r}")
+            return results
+
+    client = OrderErrorThenChunkSuccessClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=2,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=2)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="en_to_zh",
+    )
+
+    assert result.translated_segment_texts["seg-0029"] == (
+        "3. 编辑 @@PROTECT_0009@@ 在与 @@PROTECT_0010@@ 相同的文件夹中"
+    )
+    assert result.single_segment_placeholder_fallback_count == 1
+    assert client.calls == [
+        ["seg-0029"],
+        ["seg-0029"],
+        ["seg-0029"],
+        ["seg-0029__phchunk_00", "seg-0029__phchunk_01"],
+    ]
+
+
+def test_translate_segmented_document_recovers_single_segment_order_error_with_three_placeholders() -> None:
+    segment_text = (
+        "* 使用 @@PROTECT_0761@@ 作为输入，经过 @@PROTECT_0762@@ 场景下的算法链 "
+        "@@PROTECT_0763@@ 处理后，通过 audiocodec 进行播放。"
+    )
+    segmented = SegmentedMarkdownDocument(
+        blocks=[],
+        segments=[
+            TranslationSegment(
+                id="seg-0516",
+                block_index=0,
+                block_type="list_item",
+                order_in_block=0,
+                text=segment_text,
+            )
+        ],
+    )
+
+    class ThreePlaceholderOrderErrorClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            results: list[TranslationResult] = []
+            for item in items:
+                if item.text == segment_text:
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "* Use @@PROTECT_0761@@ as input, then play via audiocodec "
+                                "after @@PROTECT_0763@@ is processed in the "
+                                "@@PROTECT_0762@@ scenario."
+                            ),
+                        )
+                    )
+                    continue
+
+                if item.text == "* 使用 @@PROTECT_0761@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text="* Use @@PROTECT_0761@@",
+                        )
+                    )
+                    continue
+
+                if item.text == " 作为输入，经过 @@PROTECT_0762@@":
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=" as input, processed in the @@PROTECT_0762@@",
+                        )
+                    )
+                    continue
+
+                if (
+                    item.text
+                    == " 场景下的算法链 @@PROTECT_0763@@ 处理后，通过 audiocodec 进行播放。"
+                ):
+                    results.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                " scenario by the @@PROTECT_0763@@ algorithm chain, "
+                                "then play via audiocodec."
+                            ),
+                        )
+                    )
+                    continue
+
+                raise AssertionError(f"Unexpected item text: {item.text!r}")
+            return results
+
+    client = ThreePlaceholderOrderErrorClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=2,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=2)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert result.translated_segment_texts["seg-0516"] == (
+        "* Use @@PROTECT_0761@@ as input, processed in the @@PROTECT_0762@@"
+        " scenario by the @@PROTECT_0763@@ algorithm chain, then play via audiocodec."
+    )
+    assert result.single_segment_placeholder_fallback_count == 1
+    assert client.calls == [
+        ["seg-0516"],
+        ["seg-0516"],
+        ["seg-0516"],
+        [
+            "seg-0516__phchunk_00",
+            "seg-0516__phchunk_01",
+            "seg-0516__phchunk_02",
+        ],
+    ]
+
+
+def test_translate_segmented_document_reduces_parallel_batches_after_rate_limit() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。第五句继续补充。第六句收尾说明。",
+        max_segment_length=12,
+    )
+
+    class RateLimitedParallelClient(FakeBatchClient):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self._active_calls = 0
+            self.max_active_calls = 0
+            self.rate_limit_hits = 0
+            self._lock = threading.Lock()
+
+        def translate_batch(self, items, direction: str, glossary=None):
+            with self._lock:
+                self._active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self._active_calls)
+                should_rate_limit = self._active_calls > 1 and self.rate_limit_hits == 0
+                if should_rate_limit:
+                    self.rate_limit_hits += 1
+
+            try:
+                time.sleep(0.05)
+                if should_rate_limit:
+                    raise LLMClientError(
+                        "Model request rate limited: HTTP 429 Too Many Requests. "
+                        "The endpoint is throttling requests."
+                    )
+                return super().translate_batch(items, direction, glossary)
+            finally:
+                with self._lock:
+                    self._active_calls -= 1
+
+    client = RateLimitedParallelClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            parallel_batches=2,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, parallel_batches=2, max_retries=0)
+    logs: list[str] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        on_log=logs.append,
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert result.rate_limit_backoff_count == 1
+    assert client.max_active_calls >= 2
+    assert client.rate_limit_hits == 1
+    assert any("降并发重试" in message for message in logs)
+
+
+def test_translate_segmented_document_raises_after_retry_limit() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+
+    class AlwaysFailClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            raise LLMClientError("permanent failure")
+
+    client = AlwaysFailClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    with pytest.raises(LLMClientError, match="batch 1/2 .* after 2 attempts"):
+        service.translate_segmented_document(segmented, direction="zh_to_en")
+
+
+def test_translate_segmented_document_rejects_non_positive_parallel_batches() -> None:
+    client = _build_client()
+
+    with pytest.raises(ValueError, match="parallel_batches must be greater than zero"):
+        TranslationTaskService(client, parallel_batches=0)
+
+
+def test_translate_segmented_document_rebuilds_protected_block_texts() -> None:
+    segmented = _build_segmented_document(
+        "# 标题 `code`\n\n普通段落，包含 [文档](https://example.com/doc)。",
+        max_segment_length=100,
+    )
+    client = _build_client()
+    service = TranslationTaskService(client)
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+    )
+
+    assert len(result.rebuilt_protected_block_texts) == len(segmented.blocks)
+    assert "@@PROTECT_" in result.rebuilt_protected_block_texts[0]
+    assert "@@PROTECT_" in result.rebuilt_protected_block_texts[-1]
+    assert "@@PROTECT_" not in result.final_markdown_text
+
+
+def test_translate_segmented_document_handles_zero_segments() -> None:
+    segmented = _build_segmented_document("```bash\necho hello\n```\n")
+    client = _build_client()
+    service = TranslationTaskService(client)
+
+    result = service.translate_segmented_document(segmented, direction="zh_to_en")
+
+    assert result.total_segments == 0
+    assert result.total_batches == 0
+    assert result.rebuilt_protected_block_texts == [block.protected_text for block in segmented.blocks]
+    assert result.final_markdown_text == "```bash\necho hello\n```\n"
+
+
+def test_translate_segmented_document_retries_when_placeholder_sentence_keeps_chinese() -> None:
+    segmented = _build_segmented_document(
+        "说明 `CONFIG_SPINOR_LOGICAL_OFFSET` 不同，需要根据 `bootpackage` 动态适配。\n",
+        max_segment_length=200,
+    )
+
+    class ResidualChineseClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            current_batch_index = self._batch_counter
+            self._batch_counter += 1
+
+            if current_batch_index == 0:
+                return [
+                    TranslationResult(
+                        id=items[0].id,
+                        translated_text=(
+                            "The sizes of @@PROTECT_0000@@ 不同，需要根据 "
+                            "@@PROTECT_0001@@ are dynamically adapted."
+                        ),
+                    )
+                ]
+
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text=(
+                        "The sizes of @@PROTECT_0000@@ differ and must be "
+                        "adjusted dynamically according to @@PROTECT_0001@@."
+                    ),
+                )
+            ]
+
+    client = ResidualChineseClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="zh_to_en")
+
+    assert len(client.calls) == 2
+    assert "不同" not in result.final_markdown_text
+    assert "需要根据" not in result.final_markdown_text
+    assert "`CONFIG_SPINOR_LOGICAL_OFFSET`" in result.final_markdown_text
+    assert "`bootpackage`" in result.final_markdown_text
+
+
+def test_translate_segmented_document_rejects_untranslated_plain_chinese_without_placeholders() -> None:
+    segmented = _build_segmented_document(
+        "这是一个完全未保护的中文句子。\n",
+        max_segment_length=200,
+    )
+
+    class UntranslatedPlainChineseClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text=items[0].text,
+                )
+            ]
+
+    client = UntranslatedPlainChineseClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=0)
+
+    with pytest.raises(
+        LLMClientError,
+        match="contains Chinese outside protected placeholders",
+    ):
+        service.translate_segmented_document(segmented, direction="zh_to_en")
+
+
+def test_translate_segmented_document_retries_when_placeholder_sentence_keeps_english() -> None:
+    segmented = _build_segmented_document(
+        "The size of `CONFIG_SPINOR_LOGICAL_OFFSET` must be adjusted according to `bootpackage`.\n",
+        max_segment_length=200,
+    )
+
+    class ResidualEnglishClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            current_batch_index = self._batch_counter
+            self._batch_counter += 1
+
+            if current_batch_index == 0:
+                return [
+                    TranslationResult(
+                        id=items[0].id,
+                        translated_text=(
+                            "需要根据 @@PROTECT_0000@@ different and must be adjusted "
+                            "according to @@PROTECT_0001@@ 进行处理。"
+                        ),
+                    )
+                ]
+
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text=(
+                        "需要根据 @@PROTECT_0000@@ 动态调整，并参考 @@PROTECT_0001@@ 进行处理。"
+                    ),
+                )
+            ]
+
+    client = ResidualEnglishClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="en_to_zh")
+
+    assert len(client.calls) == 2
+    assert "different and must be adjusted according to" not in result.final_markdown_text
+    assert "`CONFIG_SPINOR_LOGICAL_OFFSET`" in result.final_markdown_text
+    assert "`bootpackage`" in result.final_markdown_text
+
+
+def test_translate_segmented_document_applies_strict_validation_mode_presets() -> None:
+    client = FakeBatchClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            validation_mode="strict",
+        )
+    )
+
+    service = TranslationTaskService(client)
+
+    assert service.residual_language_threshold == 3
+    assert service.allow_placeholder_reorder is False
+    assert service.min_batch_split_size == 1
+
+
+def test_translate_segmented_document_allows_limited_english_terms_for_en_to_zh() -> None:
+    segmented = _build_segmented_document(
+        "Check `CONFIG_SPINOR_LOGICAL_OFFSET` against the Linux kernel.\n",
+        max_segment_length=200,
+    )
+
+    class ProductTermClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text="请检查 @@PROTECT_0000@@ 与 Linux kernel 的差异。",
+                )
+            ]
+
+    client = ProductTermClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=1,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="en_to_zh")
+
+    assert "Linux kernel" in result.final_markdown_text
+    assert "`CONFIG_SPINOR_LOGICAL_OFFSET`" in result.final_markdown_text
+
+
+def test_translate_segmented_document_recovers_single_segment_residual_english_by_line() -> None:
+    segmented = _build_segmented_document(
+        (
+            "Tests use pytest with PySide6's offscreen platform (`QT_QPA_PLATFORM=offscreen`).\n"
+            "Test fixtures are in `tests/fixtures/` including regression samples for Markdown and DITA.\n"
+        ),
+        max_segment_length=200,
+    )
+    segment_id = segmented.segments[0].id
+    first_line = segmented.segments[0].text.splitlines(keepends=True)[0]
+    second_line = segmented.segments[0].text.splitlines(keepends=True)[1]
+
+    class ResidualEnglishLineFallbackClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            if len(items) == 1 and items[0].id == segment_id:
+                return [
+                    TranslationResult(
+                        id=items[0].id,
+                        translated_text=items[0].text,
+                    )
+                ]
+
+            translations: list[TranslationResult] = []
+            for item in items:
+                if item.text == first_line:
+                    translations.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "测试使用 pytest 的 PySide6 离屏平台（@@PROTECT_0000@@）。\n"
+                            ),
+                        )
+                    )
+                    continue
+
+                if item.text == second_line:
+                    translations.append(
+                        TranslationResult(
+                            id=item.id,
+                            translated_text=(
+                                "测试夹具位于 @@PROTECT_0001@@，包含 Markdown 和 DITA 的回归样本。\n"
+                            ),
+                        )
+                    )
+                    continue
+
+                raise AssertionError(f"Unexpected item text: {item.text!r}")
+
+            return translations
+
+    client = ResidualEnglishLineFallbackClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=0,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=0)
+
+    result = service.translate_segmented_document(segmented, direction="en_to_zh")
+
+    assert client.calls == [
+        [segment_id],
+        [f"{segment_id}__langchunk_00", f"{segment_id}__langchunk_01"],
+    ]
+    assert "pytest" in result.final_markdown_text
+    assert "PySide6" in result.final_markdown_text
+    assert "Markdown" in result.final_markdown_text
+    assert "`QT_QPA_PLATFORM=offscreen`" in result.final_markdown_text
+    assert "`tests/fixtures/`" in result.final_markdown_text
+
+
+def test_translate_segmented_document_retries_when_placeholders_change_order() -> None:
+    segmented = _build_segmented_document(
+        "| 名称 | 说明 |\n| --- | --- |\n| boot0 | 启动文件 |\n",
+        max_segment_length=50,
+    )
+
+    class PlaceholderOrderClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            current_batch_index = self._batch_counter
+            self._batch_counter += 1
+
+            if current_batch_index == 0:
+                if len(items) == 2:
+                    return [
+                        TranslationResult(
+                            id=items[0].id,
+                            translated_text=(
+                                "@@PROTECT_0001@@ Name @@PROTECT_0000@@ "
+                                "Description @@PROTECT_0002@@"
+                            ),
+                        ),
+                        TranslationResult(
+                            id=items[1].id,
+                            translated_text="@@PROTECT_0003@@",
+                        ),
+                    ]
+
+                return [
+                    TranslationResult(
+                        id=items[0].id,
+                        translated_text=(
+                            "@@PROTECT_0004@@ boot0 @@PROTECT_0005@@ "
+                            "Boot file @@PROTECT_0006@@"
+                        ),
+                    )
+                ]
+
+            if len(items) == 2:
+                return [
+                    TranslationResult(
+                        id=items[0].id,
+                        translated_text=(
+                            "@@PROTECT_0000@@ Name @@PROTECT_0001@@ "
+                            "Description @@PROTECT_0002@@"
+                        ),
+                    ),
+                    TranslationResult(
+                        id=items[1].id,
+                        translated_text="@@PROTECT_0003@@",
+                    ),
+                ]
+
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text=(
+                        "@@PROTECT_0004@@ boot0 @@PROTECT_0005@@ "
+                        "Boot file @@PROTECT_0006@@"
+                    ),
+                )
+            ]
+
+    client = PlaceholderOrderClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="zh_to_en")
+
+    assert len(client.calls) == 3
+    assert client.calls[0] == client.calls[1]
+    assert "| Name | Description |" in result.final_markdown_text
+
+
+def test_translate_segmented_document_normalizes_placeholder_format_variants() -> None:
+    segmented = _build_segmented_document(
+        "| 名称 | 说明 |\n| --- | --- |\n",
+        max_segment_length=100,
+    )
+
+    class PlaceholderFormatClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text="@@ protect-0 @@ Name @@ protect-1 @@ Description \\@\\@PROTECT_0002\\@\\@ @@ protect-3 @@",
+                )
+            ]
+
+    client = PlaceholderFormatClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    result = service.translate_segmented_document(segmented, direction="zh_to_en")
+
+    assert len(client.calls) == 1
+    assert "| Name | Description |" in result.final_markdown_text
+    assert "| --- | --- |" in result.final_markdown_text
+
+
+def test_translate_segmented_document_logs_retry_context() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。第四句补充细节。",
+        max_segment_length=12,
+    )
+    client = _build_client(fail_once_on_batch_index=0)
+    service = TranslationTaskService(client, max_retries=1)
+    logs: list[str] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        on_log=logs.append,
+    )
+
+    assert result.successful_batches == result.total_batches
+    assert any("开始批次 1/" in message for message in logs)
+    assert any("第 1 次失败，准备重试" in message for message in logs)
+    assert any("重试成功" in message for message in logs)
+    assert any("seg-0000" in message for message in logs)
+
+
+def test_translate_segmented_document_failure_mentions_batch_and_segments() -> None:
+    segmented = _build_segmented_document(
+        "第一句比较短。第二句也比较短。第三句继续说明。",
+        max_segment_length=12,
+    )
+
+    class AlwaysFailClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            raise LLMClientError("permanent failure")
+
+    client = AlwaysFailClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=2,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    with pytest.raises(LLMClientError) as exc_info:
+        service.translate_segmented_document(
+            segmented,
+            direction="zh_to_en",
+        )
+
+    assert "batch 1/" in str(exc_info.value)
+    assert "segments: seg-0000" in str(exc_info.value)
+
+
+def test_translate_segmented_document_splits_failed_batch_for_placeholder_order_error() -> None:
+    segmented = _build_segmented_document(
+        "| 名称 | 说明 |\n| --- | --- |\n| boot0 | 启动文件 |\n| env | 环境变量 |\n",
+        max_segment_length=150,
+    )
+
+    class SplitFallbackClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            if len(items) > 1:
+                return [
+                    TranslationResult(
+                        id=item.id,
+                        translated_text=item.text.replace(
+                            "@@PROTECT_0000@@",
+                            "@@PROTECT_9999@@",
+                        ),
+                    )
+                    for item in items
+                ]
+
+            text = items[0].text
+            replacements = {
+                "名称": "Name",
+                "说明": "Description",
+                "启动文件": "Boot file",
+                "环境变量": "Environment variable",
+            }
+            for source, target in replacements.items():
+                text = text.replace(source, target)
+            return [TranslationResult(id=items[0].id, translated_text=text)]
+
+    client = SplitFallbackClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=8,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+    logs: list[str] = []
+
+    result = service.translate_segmented_document(
+        segmented,
+        direction="zh_to_en",
+        on_log=logs.append,
+    )
+
+    assert any("降批" in message for message in logs)
+    assert result.split_batch_fallback_count == 1
+    assert any(len(call) > 1 for call in client.calls)
+    assert any(len(call) == 1 for call in client.calls)
+    assert "| Name | Description |" in result.final_markdown_text
+    assert "| boot0 | Boot file |" in result.final_markdown_text
+
+
+def test_translate_segmented_document_does_not_split_single_segment_failure() -> None:
+    segmented = _build_segmented_document(
+        "| 名称 | 说明 |\n| --- | --- |\n",
+        max_segment_length=200,
+    )
+
+    class SingleSegmentOrderFailClient(FakeBatchClient):
+        def translate_batch(self, items, direction: str, glossary=None):
+            self.calls.append([item.id for item in items])
+            return [
+                TranslationResult(
+                    id=items[0].id,
+                    translated_text=items[0].text.replace(
+                        "@@PROTECT_0000@@",
+                        "@@PROTECT_9999@@",
+                    ),
+                )
+            ]
+
+    client = SingleSegmentOrderFailClient(
+        settings=LLMSettings(
+            provider="openai_compatible",
+            api_format="openai",
+            base_url="https://llm.example/v1",
+            api_key="secret",
+            model="test-model",
+            batch_size=8,
+            max_retries=1,
+        )
+    )
+    service = TranslationTaskService(client, max_retries=1)
+
+    with pytest.raises(LLMClientError, match="after 2 attempts"):
+        service.translate_segmented_document(segmented, direction="zh_to_en")

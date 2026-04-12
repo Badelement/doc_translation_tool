@@ -1,0 +1,1 @@
+<topic id="sample"><title>启动说明</title><shortdesc>用于验证 DITA 回归样例。</shortdesc><body><p>参数 CONFIG_SPINOR_LOGICAL_OFFSET 需要和 boot0.bin 保持一致。</p><p>使用 /opt/images/boot0.bin 前，请确认 config/settings.json 配置正确。</p><p>请查看<xref href="docs/guide.dita">用户手册</xref>。</p><codeblock>echo CONFIG_SPINOR_LOGICAL_OFFSET</codeblock></body></topic>
