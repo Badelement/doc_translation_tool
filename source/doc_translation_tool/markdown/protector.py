@@ -8,7 +8,6 @@ from doc_translation_tool.utils.text_utils import (
     HTML_TAG_PATTERN,
     PATH_PATTERN,
     UPPER_CONSTANT_PATTERN,
-    looks_like_file_reference,
     extract_file_references,
 )
 
@@ -851,7 +850,6 @@ class MarkdownProtector:
 
         # Process content with block comments
         last_end = 0
-        protected_parts: list[str] = []
 
         for start, end, start_marker, comment_content, end_marker in merged_matches:
             # Process code before this block comment

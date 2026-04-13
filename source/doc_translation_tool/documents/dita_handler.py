@@ -21,7 +21,6 @@ from doc_translation_tool.utils.text_utils import (
     URL_PATTERN,
     UPPER_CONSTANT_PATTERN,
     PATH_PATTERN,
-    looks_like_file_reference,
     extract_file_references,
 )
 
